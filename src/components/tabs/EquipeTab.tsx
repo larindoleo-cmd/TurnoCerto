@@ -14,6 +14,7 @@ import {
   UserPlus,
   RefreshCw,
   Pencil,
+  Scan,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Colaborador, StatusColaborador } from '../../types';
@@ -22,6 +23,9 @@ export const EquipeTab: React.FC = () => {
   const {
     colaboradores,
     condominios,
+    solicitacoesBiometria,
+    aprovarSolicitacaoBiometria,
+    rejeitarSolicitacaoBiometria,
     filterEquipeStatus,
     setFilterEquipeStatus,
     filterEquipeFuncao,
@@ -35,6 +39,8 @@ export const EquipeTab: React.FC = () => {
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
+
+  const biometriasPendentes = solicitacoesBiometria.filter((s) => s.status === 'pendente');
 
   // Status Filter Chips (Requested in Section 3)
   const statusChips = [
@@ -136,6 +142,81 @@ export const EquipeTab: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* 2.5 APROVAÇÕES PENDENTES DE BIOMETRIA FACIAL */}
+      {biometriasPendentes.length > 0 && (
+        <div className="rounded-2xl p-4 bg-gradient-to-br from-[#0B173E] via-[#09122D] to-[#070D22] border-2 border-cyan-500/50 shadow-xl space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-cyan-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Scan className="w-4 h-4 text-cyan-400 animate-pulse" />
+              <span>Solicitações de Biometria Facial Aguardando Liberação ({biometriasPendentes.length})</span>
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold">
+              Ação Requerida
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {biometriasPendentes.map((sol) => (
+              <div
+                key={`tab-sol-${sol.id}`}
+                className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <img
+                      src={
+                        sol.fotoPerfil ||
+                        'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&auto=format&fit=crop&q=80'
+                      }
+                      alt={sol.colaboradorNome}
+                      className="w-10 h-10 rounded-xl object-cover border border-cyan-400/40 shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <strong className="text-white text-xs truncate">{sol.colaboradorNome}</strong>
+                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 border border-blue-500/40 font-bold">
+                          {sol.tipoSolicitacao === 'primeiro_cadastro' ? '1º Cadastro' : 'Recadastro'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 truncate">
+                        {sol.colaboradorFuncao || 'Colaborador'} · {sol.colaboradorMatricula || 'N/A'}
+                      </p>
+                      <p className="text-[10px] text-slate-400 truncate">
+                        Posto: {sol.condominioNome || sol.postoNome || 'Portaria Principal'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300">
+                  <span className="text-slate-400 text-[10px] uppercase font-semibold block">Justificativa:</span>
+                  <p className="italic text-slate-200 mt-0.5">&quot;{sol.motivo}&quot;</p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-800/80">
+                  <button
+                    onClick={() => {
+                      const just = prompt('Informe o motivo da rejeição:');
+                      if (just?.trim()) rejeitarSolicitacaoBiometria(sol.id, just.trim());
+                    }}
+                    className="px-2.5 py-1 text-xs text-slate-400 hover:text-red-300 bg-slate-900 hover:bg-red-950/40 border border-slate-800 rounded-lg cursor-pointer"
+                  >
+                    Rejeitar
+                  </button>
+                  <button
+                    onClick={() => aprovarSolicitacaoBiometria(sol.id)}
+                    className="px-3 py-1 text-xs font-bold text-white bg-gradient-to-r from-blue-600 to-emerald-600 hover:from-blue-500 hover:to-emerald-500 rounded-lg shadow-md active:scale-95 cursor-pointer flex items-center gap-1"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Aprovar (Token 48h)</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 3. Barra Superior de Filtros por Pílulas Deslizantes (Chips) */}
       <div className="overflow-x-auto no-scrollbar -mx-4 px-4 py-1">

@@ -1,5 +1,5 @@
-import React from 'react';
-import { X, Bell, AlertTriangle, CheckCircle2, Clock, ShieldAlert, MapPin, Navigation } from 'lucide-react';
+import React, { useState } from 'react';
+import { X, Bell, AlertTriangle, CheckCircle2, Clock, ShieldAlert, MapPin, Navigation, Scan, Check, XCircle } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { CondominioBadge } from './common/CondominioBadge';
 
@@ -12,17 +12,48 @@ export const NotificationModal: React.FC = () => {
     setNotificationModalOpen,
     condominios,
     colaboradores,
+    solicitacoesBiometria,
+    aprovarSolicitacaoBiometria,
+    rejeitarSolicitacaoBiometria,
   } = useApp();
+
+  const [processingId, setProcessingId] = useState<string | null>(null);
 
   if (!notificationModalOpen) return null;
 
+  const biometriasPendentes = solicitacoesBiometria.filter((s) => s.status === 'pendente');
   const postosDescobertos = condominios.filter((c) => c.status === 'critico');
   const faltasHoje = colaboradores.filter((c) => c.status === 'falta');
   const alertasPendentes = alertas.filter((a) => !a.resolvido);
   const alertasResolvidos = alertas.filter((a) => a.resolvido);
 
-  const totalCriticos = postosDescobertos.length + faltasHoje.length + alertasPendentes.length;
-  const temInconformidadeOperacional = postosDescobertos.length > 0 || faltasHoje.length > 0;
+  const totalCriticos =
+    postosDescobertos.length +
+    faltasHoje.length +
+    alertasPendentes.length +
+    biometriasPendentes.length;
+  const temInconformidadeOperacional =
+    postosDescobertos.length > 0 || faltasHoje.length > 0 || biometriasPendentes.length > 0;
+
+  const handleAprovarBiometria = async (id: string) => {
+    setProcessingId(id);
+    try {
+      await aprovarSolicitacaoBiometria(id);
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleRejeitarBiometria = async (id: string) => {
+    const just = prompt('Informe a justificativa da rejeição do cadastro biométrico:');
+    if (!just || !just.trim()) return;
+    setProcessingId(id);
+    try {
+      await rejeitarSolicitacaoBiometria(id, just.trim());
+    } finally {
+      setProcessingId(null);
+    }
+  };
 
   return (
     <div
@@ -45,7 +76,7 @@ export const NotificationModal: React.FC = () => {
               <p className="text-[11px] text-slate-400">
                 {totalCriticos === 0
                   ? 'Nenhum alerta pendente no momento'
-                  : `${totalCriticos} alerta(s) operacional(is) ativo(s)`}
+                  : `${totalCriticos} pendência(s) aguardando sua ação`}
               </p>
             </div>
           </div>
@@ -63,11 +94,89 @@ export const NotificationModal: React.FC = () => {
               <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
               <p className="text-sm font-bold text-slate-200">Nenhum Alerta Operacional!</p>
               <p className="text-xs text-slate-400 max-w-xs mx-auto">
-                Todos os postos estão operando com 100% de cobertura e nenhuma falta foi registrada no plantão.
+                Todos os postos estão operando com 100% de cobertura e nenhuma pendência de biometria ou falta foi registrada.
               </p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
+              {/* Seção Prioritária: Solicitações de Biometria Facial Pendentes */}
+              {biometriasPendentes.length > 0 && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                      <Scan className="w-4 h-4 text-cyan-400 animate-pulse" />
+                      <span>Solicitações de Biometria Facial ({biometriasPendentes.length})</span>
+                    </span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold">
+                      Ação Obrigatória
+                    </span>
+                  </div>
+
+                  {biometriasPendentes.map((sol) => (
+                    <div
+                      key={`sol-bio-${sol.id}`}
+                      className="p-3.5 rounded-2xl bg-gradient-to-br from-[#0B173E] via-[#09122D] to-[#070D22] border-2 border-cyan-500/50 space-y-3 shadow-xl shadow-cyan-950/40"
+                    >
+                      <div className="flex items-start justify-between gap-2.5">
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          <img
+                            src={
+                              sol.fotoPerfil ||
+                              'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&auto=format&fit=crop&q=80'
+                            }
+                            alt={sol.colaboradorNome}
+                            className="w-11 h-11 rounded-xl object-cover border-2 border-cyan-400/50 shadow-md shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <h4 className="font-bold text-white text-xs truncate">{sol.colaboradorNome}</h4>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-500/25 text-blue-300 border border-blue-500/40">
+                                {sol.tipoSolicitacao === 'primeiro_cadastro' ? '1º Cadastro' : 'Recadastro'}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-cyan-200/90 truncate">
+                              {sol.colaboradorFuncao || 'Colaborador'} · Matrícula: <strong className="text-white font-mono">{sol.colaboradorMatricula || 'N/A'}</strong>
+                            </p>
+                            <p className="text-[10px] text-slate-400 truncate">
+                              Posto: <strong className="text-slate-300">{sol.condominioNome || sol.postoNome || 'Portaria Principal'}</strong>
+                            </p>
+                          </div>
+                        </div>
+
+                        <span className="text-[10px] font-mono text-slate-400 shrink-0 bg-slate-900/90 px-2 py-0.5 rounded-lg border border-slate-800">
+                          {new Date(sol.criadoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+
+                      {/* Motivo informado pelo colaborador */}
+                      <div className="p-2.5 rounded-xl bg-slate-950/90 border border-slate-800 text-[11px] text-slate-300 space-y-1">
+                        <span className="text-slate-400 font-semibold block text-[10px] uppercase">Justificativa do Colaborador:</span>
+                        <p className="italic text-slate-200 leading-snug">&quot;{sol.motivo}&quot;</p>
+                      </div>
+
+                      {/* Ações Rápidas do Administrador / Supervisor */}
+                      <div className="pt-2 border-t border-slate-800/80 flex items-center justify-end gap-2">
+                        <button
+                          disabled={processingId === sol.id}
+                          onClick={() => handleRejeitarBiometria(sol.id)}
+                          className="px-3 py-1.5 text-xs font-semibold text-slate-400 hover:text-red-300 bg-slate-900 hover:bg-red-950/40 border border-slate-800 hover:border-red-500/40 rounded-xl transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          Rejeitar
+                        </button>
+
+                        <button
+                          disabled={processingId === sol.id}
+                          onClick={() => handleAprovarBiometria(sol.id)}
+                          className="px-3.5 py-1.5 text-xs font-bold text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-600 hover:from-blue-500 hover:to-emerald-500 rounded-xl shadow-lg shadow-blue-600/30 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        >
+                          <CheckCircle2 className="w-4 h-4 text-white" />
+                          <span>{processingId === sol.id ? 'Aprovando...' : 'Aprovar Cadastro (48h)'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {/* Seção 1: Postos Descobertos (Crítico) */}
               {postosDescobertos.length > 0 && (
                 <div className="space-y-2">

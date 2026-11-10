@@ -12,6 +12,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenInstall, isInstallable }) 
     alertas,
     condominios,
     colaboradores,
+    solicitacoesBiometria,
     setNotificationModalOpen,
     setSupabaseModalOpen,
     empresaInfo,
@@ -36,15 +37,16 @@ export const Header: React.FC<HeaderProps> = ({ onOpenInstall, isInstallable }) 
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [userMenuOpen]);
 
-  // Alertas operacionais prioritários: Postos Descobertos e Faltas no Dia
+  // Alertas operacionais prioritários: Postos Descobertos, Faltas e Solicitações de Biometria
   const postosDescobertosCount = condominios.filter((c) => c.status === 'critico').length;
   const faltasCount = colaboradores.filter((c) => c.status === 'falta').length;
+  const biometriasPendentesCount = solicitacoesBiometria.filter((s) => s.status === 'pendente').length;
   const pendenciasCriticas = alertas.filter(
     (a) => !a.resolvido && (a.gravidade === 'critica' || a.gravidade === 'moderada')
   ).length;
 
-  const temAlertaOperacional = postosDescobertosCount > 0 || faltasCount > 0;
-  const totalAlertasOperacionais = postosDescobertosCount + faltasCount + pendenciasCriticas;
+  const temAlertaOperacional = postosDescobertosCount > 0 || faltasCount > 0 || biometriasPendentesCount > 0;
+  const totalAlertasOperacionais = postosDescobertosCount + faltasCount + pendenciasCriticas + biometriasPendentesCount;
 
   return (
     <header className="sticky top-0 z-30 bg-[#060913]/95 backdrop-blur-md border-b border-slate-800/80 px-3.5 sm:px-4 py-2.5 transition-all">

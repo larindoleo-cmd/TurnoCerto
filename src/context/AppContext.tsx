@@ -2147,6 +2147,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const res = await solicitarCadastroBiometria(colaborador, motivo, tipo);
       if (res.success && res.solicitacao) {
         setSolicitacoesBiometria((prev) => [res.solicitacao, ...prev.filter((s) => s.id !== res.solicitacao.id)]);
+
+        // Dispara Alerta Operacional no painel de Notificações do Administrador / Supervisor
+        const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        const novoAlerta: AlertaOperacional = {
+          id: `alerta-bio-${res.solicitacao.id}`,
+          tipo: 'solicitacao_biometria',
+          gravidade: 'moderada',
+          titulo: 'Solicitação de Biometria Facial',
+          descricao: `${colaborador.nome} (${colaborador.funcao} - ${colaborador.postoNome || 'Portaria Principal'}) aguarda autorização para ${tipo === 'primeiro_cadastro' ? 'primeiro cadastro' : 'recadastro'} facial. Motivo: "${motivo}"`,
+          postoId: colaborador.condominioId || '',
+          postoNome: colaborador.postoNome || 'Portaria Principal',
+          colaboradorId: colaborador.id,
+          colaboradorNome: colaborador.nome,
+          horario: agoraHora,
+          resolvido: false,
+        };
+        setAlertas((prev) => [novoAlerta, ...prev.filter((a) => a.id !== novoAlerta.id)]);
+
         showToast('Solicitação de biometria facial enviada ao supervisor com sucesso!');
         return { success: true, message: 'Solicitação cadastrada e enviada à supervisão.' };
       }
@@ -2169,6 +2187,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setSolicitacoesBiometria((prev) =>
         prev.map((s) => (s.id === solicitacaoId ? res.solicitacao! : s))
       );
+
+      // Marca o alerta correspondente como resolvido
+      const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      setAlertas((prev) =>
+        prev.map((a) =>
+          a.id === `alerta-bio-${solicitacaoId}`
+            ? { ...a, resolvido: true, resolvidoPor: sup.nome, resolvidoEm: agoraHora }
+            : a
+        )
+      );
+
       showToast(`Autorização aprovada com sucesso! Válida por ${validadeHoras} horas.`);
       return { success: true, message: 'Solicitação aprovada e token gerado.' };
     }
@@ -2187,6 +2216,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setSolicitacoesBiometria((prev) =>
         prev.map((s) => (s.id === solicitacaoId ? res.solicitacao! : s))
       );
+
+      // Marca o alerta como resolvido
+      const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      setAlertas((prev) =>
+        prev.map((a) =>
+          a.id === `alerta-bio-${solicitacaoId}`
+            ? { ...a, resolvido: true, resolvidoPor: sup.nome, resolvidoEm: agoraHora }
+            : a
+        )
+      );
+
       showToast('Solicitação de biometria rejeitada.');
       return { success: true, message: 'Solicitação rejeitada com justificativa.' };
     }

@@ -13,6 +13,7 @@ import {
   Phone,
   ShieldCheck,
   Calendar,
+  Scan,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { CondominioSelector } from '../CondominioSelector';
@@ -22,6 +23,7 @@ export const OperacaoTab: React.FC = () => {
     condominios,
     colaboradores,
     alertas,
+    solicitacoesBiometria,
     selectedCondominioId,
     openPosto360,
     openSubstituicaoModal,
@@ -54,10 +56,11 @@ export const OperacaoTab: React.FC = () => {
     : 100;
 
   // Contagem de alertas e inconformidades reais
-  const pendenciasCriticas = alertas.filter((a) => !a.resolvido).length;
+  const biometriasPendentesCount = solicitacoesBiometria.filter((s) => s.status === 'pendente').length;
+  const pendenciasCriticas = alertas.filter((a) => !a.resolvido).length + biometriasPendentesCount;
   const postosDescobertosCount = condominios.filter((c) => c.status === 'critico').length;
   const faltasCount = colaboradores.filter((c) => c.status === 'falta').length;
-  const hasAlertasCriticos = postosDescobertosCount > 0 || faltasCount > 0;
+  const hasAlertasCriticos = postosDescobertosCount > 0 || faltasCount > 0 || biometriasPendentesCount > 0;
 
   // Search filter
   const searchResults = localSearch.trim()
@@ -273,14 +276,14 @@ export const OperacaoTab: React.FC = () => {
             </div>
 
             {/* Divisor vertical separando as ocorrências críticas */}
-            <div className="grid grid-cols-2 gap-3 pt-3 border-t border-red-900/40 divide-x divide-red-900/40">
-              {/* Lado esquerdo: Posto Descoberto */}
+            <div className={`grid ${biometriasPendentesCount > 0 ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-2'} gap-3 pt-3 border-t border-red-900/40 divide-y sm:divide-y-0 sm:divide-x divide-red-900/40`}>
+              {/* Coluna 1: Posto Descoberto */}
               <div
                 onClick={() => {
                   const targetPosto = condominios.find((c) => c.status === 'critico') || condominios[0];
                   if (targetPosto) openSubstituicaoModal(targetPosto);
                 }}
-                className="pr-2 cursor-pointer group"
+                className="pr-2 cursor-pointer group pb-2 sm:pb-0"
               >
                 <div className="flex items-baseline gap-2">
                   <span className="text-2xl sm:text-3xl font-bold font-mono text-red-400 tabular-nums group-hover:scale-105 transition-transform">
@@ -306,14 +309,14 @@ export const OperacaoTab: React.FC = () => {
                 )}
               </div>
 
-              {/* Lado direito: Faltas no Dia */}
+              {/* Coluna 2: Faltas no Dia */}
               <div
                 onClick={() => {
                   const targetPosto = condominios.find((c) => c.status !== 'operacional') || condominios[0];
                   const targetColab = colaboradores.find((c) => c.status === 'falta');
                   if (targetPosto) openSubstituicaoModal(targetPosto, targetColab);
                 }}
-                className="pl-3 sm:pl-4 cursor-pointer group"
+                className="pl-0 sm:pl-3 pt-2 sm:pt-0 cursor-pointer group pb-2 sm:pb-0"
               >
                 <div className="flex items-baseline gap-2">
                   <span className="text-2xl sm:text-3xl font-bold font-mono text-amber-400 tabular-nums group-hover:scale-105 transition-transform">
@@ -338,6 +341,30 @@ export const OperacaoTab: React.FC = () => {
                   </span>
                 )}
               </div>
+
+              {/* Coluna 3: Biometrias Pendentes */}
+              {biometriasPendentesCount > 0 && (
+                <div
+                  onClick={() => setNotificationModalOpen(true)}
+                  className="pl-0 sm:pl-3 pt-2 sm:pt-0 cursor-pointer group"
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl sm:text-3xl font-bold font-mono text-cyan-400 tabular-nums group-hover:scale-105 transition-transform animate-pulse">
+                      {biometriasPendentesCount}
+                    </span>
+                    <span className="text-xs sm:text-sm font-bold text-cyan-200 flex items-center gap-1">
+                      <Scan className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Biometria Facial</span>
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-cyan-200/90 mt-0.5 truncate">
+                    Aguardando liberação de token
+                  </p>
+                  <span className="inline-block text-[10px] font-bold text-cyan-400 group-hover:underline mt-1">
+                    Aprovar na notificação →
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </section>
