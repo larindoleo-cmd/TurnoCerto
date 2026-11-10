@@ -1,7 +1,9 @@
 -- ============================================================================
--- ESPECIFICAÇÃO DE BANCO DE DADOS SUPABASE (POSTGRESQL) - RECONHECIMENTO FACIAL
--- Sistema de Bate-Ponto TurnoCerto
--- Suporta: pgvector (vector 128D), fallback float8[] / JSONB, RPC de busca e RLS
+-- AVISO IMPORTANTE: NÃO EXECUTAR ESTE ARQUIVO DIRETAMENTE EM PRODUÇÃO!
+-- Este script legado supõe IDs UUID. O TurnoCerto utiliza identificadores TEXT
+-- para colaboradores (ex: 'colab-1731...').
+-- A migração oficial compatível e segura é:
+-- supabase/migrations/20261110_biometria_facial_core_v3.sql
 -- ============================================================================
 
 -- 1. HABILITAR EXTENSÃO PGVECTOR (Recomendado para busca e similaridade vetorial)

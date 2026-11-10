@@ -301,8 +301,8 @@ export async function recordPontoEvento(
     day: '2-digit',
   }).format(now);
 
-  // Chave de idempotência única por colaborador, tipo de evento e data
-  const idempotencyKey = `idem-${colaborador.id}-${dateKey}-${tipoEvento}-${Math.floor(now.getTime() / 60000)}`;
+  // Chave de idempotência segura e determinística por colaborador, data e tipo de batida
+  const idempotencyKey = `idem-${colaborador.id}-${dateKey}-${tipoEvento}`;
 
   // Número oficial de comprovante de ponto
   const randomSuffix = Math.floor(1000 + Math.random() * 9000);
@@ -381,10 +381,27 @@ export async function recordPontoEvento(
   let isSavedInDatabase = false;
   let offlinePending = false;
 
-  // 2. Gravação no Supabase (se configurado)
+  // 2. Gravação no Supabase com validação central no servidor
   const supabase = getSupabase();
   if (supabase) {
     try {
+      // Checagem central de duplicidade no Supabase
+      const { data: dupEvents } = await supabase
+        .from('ponto_eventos')
+        .select('id, comprovante_numero')
+        .eq('idempotency_key', idempotencyKey)
+        .limit(1);
+
+      if (dupEvents && dupEvents.length > 0) {
+        return {
+          evento: newEvento,
+          isSavedInDatabase: true,
+          offlinePending: false,
+          isDuplicated: true,
+          message: `Aviso: Esta batida de ${labelMap[tipoEvento]} já consta como confirmada no banco de dados (${dupEvents[0].comprovante_numero}).`,
+        };
+      }
+
       // Garante que o condomínio exista
       await supabase.from('condominios').upsert({
         id: posto.id,

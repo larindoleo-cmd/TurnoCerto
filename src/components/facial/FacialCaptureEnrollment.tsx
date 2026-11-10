@@ -6,22 +6,26 @@ import {
   RotateCw,
   Sun,
   ShieldCheck,
-  Sparkles,
   UserCheck,
   X,
   Scan,
   Lock,
-  Layers,
   Activity,
+  Layers,
+  Sparkles,
+  Eye,
 } from 'lucide-react';
 import {
-  analyzeFaceLighting,
-  measureLaplacianSharpness,
-  extract128DFaceDescriptor,
-  extractConsensusDescriptor,
+  loadBiometricModels,
+  areBiometricModelsLoaded,
+  evaluateFaceQuality,
+  extractConsensusNeuralDescriptor,
+  FaceQualityReport,
+  BIOMETRIC_MODEL_INFO,
+} from '../../services/faceDetectionEngine';
+import {
   saveColaboradorBiometriaFacialAuthorized,
   getActiveBiometriaAuthorization,
-  FaceQualityResult,
 } from '../../services/facialRecognitionService';
 
 export interface FacialCaptureEnrollmentProps {
@@ -53,30 +57,36 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
-  // Verificação de autorização ativa do supervisor
+  // Estados de Carregamento dos Modelos Neurais
+  const [modelsReady, setModelsReady] = useState(areBiometricModelsLoaded());
+  const [modelStage, setModelStage] = useState('Inicializando redes neurais...');
+
+  // Verificação de autorização ativa obrigatória do supervisor
   const [activeAuth, setActiveAuth] = useState(() => {
     if (initialToken) {
       return { token: initialToken, id: initialAuthId };
     }
     const found = getActiveBiometriaAuthorization(colaboradorId);
-    return found ? { token: found.tokenAutorizacao, id: found.id, expiresAt: found.expiraEm || found.validadeAutorizacao } : null;
+    return found
+      ? { token: found.tokenAutorizacao, id: found.id, expiresAt: found.expiraEm || found.validadeAutorizacao }
+      : null;
   });
 
-  const [quality, setQuality] = useState<FaceQualityResult>({
+  const [qualityReport, setQualityReport] = useState<FaceQualityReport>({
     isAcceptable: false,
     brightness: 0,
     brightnessStatus: 'too_dark',
     contrast: 0,
     sharpness: 0,
     isSharp: false,
+    facesCount: 0,
     isCentered: false,
     faceScale: 'optimal',
-    message: 'Iniciando câmera...',
+    headPose: { yaw: 'center', pitch: 'center', isFacingCamera: false },
+    message: 'Inicializando câmera...',
   });
-  const [sharpnessScore, setSharpnessScore] = useState<number>(0);
-  const [isFaceCentered, setIsFaceCentered] = useState(false);
 
-  // Estados de captura multi-frame com consenso estatístico
+  // Estados de captura multi-frame com modelo neural
   const [isCapturingSamples, setIsCapturingSamples] = useState(false);
   const [sampleProgress, setSampleProgress] = useState(0); // 0 a 5
   const [capturedDescriptor, setCapturedDescriptor] = useState<number[] | null>(null);
@@ -84,7 +94,25 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Inicializa webcam
+  // 1. Carrega os Modelos Neurais na Inicialização
+  useEffect(() => {
+    let isMounted = true;
+    loadBiometricModels((stage) => {
+      if (isMounted) setModelStage(stage);
+    })
+      .then(() => {
+        if (isMounted) setModelsReady(true);
+      })
+      .catch((err) => {
+        if (isMounted) setCameraError(err.message || 'Falha ao carregar redes neurais.');
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 2. Inicializa a Câmera Frontal com Tratamento Robusto de Ciclo de Vida
   useEffect(() => {
     let isMounted = true;
 
@@ -92,7 +120,7 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
       try {
         setCameraError(null);
         if (!navigator.mediaDevices?.getUserMedia) {
-          throw new Error('Navegador não possui suporte a captura de câmera.');
+          throw new Error('Navegador sem suporte à captura de vídeo.');
         }
 
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -112,10 +140,16 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play().catch(() => {});
-            setCameraActive(true);
-            startContinuousAnalysis();
+          videoRef.current.onloadedmetadata = async () => {
+            try {
+              await videoRef.current?.play();
+              if (isMounted) {
+                setCameraActive(true);
+                startContinuousAnalysis();
+              }
+            } catch (playErr) {
+              console.warn('Erro ao reproduzir stream da câmera:', playErr);
+            }
           };
         }
       } catch (err: any) {
@@ -123,7 +157,7 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
           setCameraError(
             err.name === 'NotAllowedError'
               ? 'Permissão de acesso à câmera negada. Habilite a câmera nas configurações do navegador.'
-              : 'Não foi possível inicializar a câmera do dispositivo.'
+              : 'Não foi possível inicializar a câmera frontal do dispositivo.'
           );
         }
       }
@@ -146,37 +180,43 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
     setCameraActive(false);
   };
 
-  // Loop contínuo de inspeção em tempo real: nitidez laplaciana + iluminação + enquadramento
+  // 3. Loop Contínuo de Avaliação em Tempo Real com Modelo Neural e Landmarks
   const startContinuousAnalysis = () => {
-    const processFrame = () => {
+    let lastCheck = 0;
+
+    const processFrame = async (timestamp: number) => {
       const video = videoRef.current;
       const canvas = canvasRef.current;
 
-      if (video && canvas && video.readyState >= 2 && !capturedPhotoUrl && !isCapturingSamples) {
+      // Executa avaliação a cada 180ms para poupar bateria e manter fluidez
+      if (
+        video &&
+        canvas &&
+        video.readyState >= 2 &&
+        video.videoWidth > 0 &&
+        !capturedPhotoUrl &&
+        !isCapturingSamples &&
+        timestamp - lastCheck > 180
+      ) {
+        lastCheck = timestamp;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (ctx) {
-          canvas.width = video.videoWidth || 480;
-          canvas.height = video.videoHeight || 480;
+          canvas.width = video.videoWidth || 640;
+          canvas.height = video.videoHeight || 640;
 
-          // Espelha horizontalmente (comportamento natural de selfie)
+          // Espelha horizontalmente (selfie natural)
           ctx.save();
           ctx.translate(canvas.width, 0);
           ctx.scale(-1, 1);
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           ctx.restore();
 
-          const roi = {
-            x: Math.floor(canvas.width * 0.2),
-            y: Math.floor(canvas.height * 0.15),
-            width: Math.floor(canvas.width * 0.6),
-            height: Math.floor(canvas.height * 0.7),
-          };
-
-          const lighting = analyzeFaceLighting(canvas, roi);
-
-          setQuality(lighting);
-          setSharpnessScore(lighting.sharpness);
-          setIsFaceCentered(lighting.isAcceptable && lighting.isSharp);
+          try {
+            const { report } = await evaluateFaceQuality(canvas);
+            setQualityReport(report);
+          } catch {
+            // Continua o loop
+          }
         }
       }
 
@@ -186,7 +226,7 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
     animFrameRef.current = requestAnimationFrame(processFrame);
   };
 
-  // Captura multi-amostra sequencial (Consenso Estatístico de 5 Frames)
+  // 4. Captura Multi-Amostra com Consenso Estatístico de Redes Neurais (5 Frames)
   const handleStartMultiFrameCapture = async () => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
@@ -194,6 +234,11 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
 
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
+
+    if (!activeAuth?.token) {
+      setCameraError('Operação negada: Autorização do supervisor não localizada.');
+      return;
+    }
 
     setIsCapturingSamples(true);
     setSampleProgress(0);
@@ -204,9 +249,8 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
     for (let i = 0; i < totalSamples; i++) {
       setSampleProgress(i + 1);
 
-      // Renderiza frame atual no canvas
-      canvas.width = video.videoWidth || 480;
-      canvas.height = video.videoHeight || 480;
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 640;
 
       ctx.save();
       ctx.translate(canvas.width, 0);
@@ -214,7 +258,6 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       ctx.restore();
 
-      // Cria cópia isolada do frame
       const frameCopy = document.createElement('canvas');
       frameCopy.width = canvas.width;
       frameCopy.height = canvas.height;
@@ -223,27 +266,37 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
 
       capturedFrames.push(frameCopy);
 
-      // Intervalo entre amostras para acomodar micro-movimentos e estabilidade
-      await new Promise((resolve) => setTimeout(resolve, 140));
+      await new Promise((resolve) => setTimeout(resolve, 150));
     }
 
-    // Calcula descritor de consenso ponderado
-    const consensusRes = extractConsensusDescriptor(capturedFrames);
-    const bestIdx = consensusRes.bestIndex || Math.floor(capturedFrames.length / 2);
-    const bestPhoto = capturedFrames[bestIdx].toDataURL('image/jpeg', 0.9);
+    try {
+      const consensusRes = await extractConsensusNeuralDescriptor(capturedFrames);
+      if (!consensusRes.consensusEmbedding || !consensusRes.bestPhotoUrl) {
+        setCameraError(
+          'Não foi possível extrair um vetor biométrico com nitidez satisfatória. Reposicione seu rosto e tente novamente.'
+        );
+        setIsCapturingSamples(false);
+        return;
+      }
 
-    setCapturedDescriptor(consensusRes.consensusDescriptor);
-    setCapturedPhotoUrl(bestPhoto);
-    setIsCapturingSamples(false);
-    stopCamera();
+      setCapturedDescriptor(consensusRes.consensusEmbedding);
+      setCapturedPhotoUrl(consensusRes.bestPhotoUrl);
+      setIsCapturingSamples(false);
+      stopCamera();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha na extração neural';
+      setCameraError(msg);
+      setIsCapturingSamples(false);
+    }
   };
 
-  // Repetir captura
+  // 5. Repetir Foto
   const handleRetake = () => {
     setCapturedDescriptor(null);
     setCapturedPhotoUrl(null);
     setSaveSuccess(false);
     setSampleProgress(0);
+    setCameraError(null);
 
     navigator.mediaDevices
       ?.getUserMedia({
@@ -260,19 +313,23 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
       });
   };
 
-  // Salvar cadastro autorizado no Supabase
+  // 6. Gravar Cadastro Autorizado Centralmente no Supabase
   const handleSaveAuthorized = async () => {
     if (!capturedDescriptor || !capturedPhotoUrl) return;
 
+    if (!activeAuth?.token) {
+      setCameraError('Autorização do supervisor inválida ou ausente.');
+      return;
+    }
+
     setIsSaving(true);
     try {
-      const token = activeAuth?.token || 'AUTH_TOKEN_SUP_MANUAL';
       const res = await saveColaboradorBiometriaFacialAuthorized(
         colaboradorId,
         colaboradorNome,
         capturedDescriptor,
         capturedPhotoUrl,
-        token
+        activeAuth.token
       );
 
       if (res.success) {
@@ -289,7 +346,7 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
   };
 
   return (
-    <div className="bg-[#09102A] text-slate-100 rounded-3xl p-5 border border-blue-500/35 shadow-2xl space-y-4 max-w-lg mx-auto">
+    <div className="bg-[#09102A] text-slate-100 rounded-3xl p-5 border border-blue-500/35 shadow-2xl space-y-4 max-w-lg mx-auto animate-in fade-in">
       {/* Cabeçalho */}
       <div className="flex items-center justify-between border-b border-slate-800 pb-3">
         <div className="flex items-center gap-2.5">
@@ -297,8 +354,8 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
             <Scan className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="text-sm font-bold text-white">Biometria Facial Homologada</h3>
-            <p className="text-[11px] text-slate-400">Vetor 128D v2 com Consenso de Amostras</p>
+            <h3 className="text-sm font-bold text-white">Biometria Facial Neural</h3>
+            <p className="text-[11px] text-slate-400">ResNet-34 128D · Landmarks 68 · Consenso 5x</p>
           </div>
         </div>
 
@@ -312,7 +369,7 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
         )}
       </div>
 
-      {/* Identificação do Colaborador & Selo de Autorização */}
+      {/* Identificação do Colaborador & Status da Autorização */}
       <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
         <div className="flex items-center justify-between">
           <div>
@@ -328,16 +385,16 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
           )}
         </div>
 
-        {/* Status da Autorização Obrigatória */}
+        {/* Selo de Autorização Criptográfica do Supervisor */}
         <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
           <span className="text-slate-400 flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-blue-400" />
             <span>Autorização do Supervisor:</span>
           </span>
-          {activeAuth ? (
-            <span className="font-mono text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+          {activeAuth?.token ? (
+            <span className="font-mono text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
               <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-              <span>TOKEN ATIVO</span>
+              <span>TOKEN CRIPTOGRÁFICO ATIVO</span>
             </span>
           ) : (
             <span className="font-mono text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/30 flex items-center gap-1">
@@ -362,10 +419,10 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
             <div className="absolute inset-0 bg-blue-900/15 pointer-events-none" />
             <div className="absolute top-3 right-3 bg-emerald-500/95 text-white text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1 shadow-md">
               <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Consenso 5x Concluído</span>
+              <span>Consenso 5x Homologado</span>
             </div>
             <div className="absolute bottom-3 left-3 bg-slate-950/80 backdrop-blur-sm text-slate-300 text-[10px] font-mono px-2 py-1 rounded-lg border border-slate-700">
-              Nitidez Laplaciana: {sharpnessScore.toFixed(1)}
+              Embedding ResNet-34 128D
             </div>
           </div>
         ) : (
@@ -381,11 +438,11 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
               <div
                 className={`w-[230px] h-[300px] rounded-[50%] border-2 transition-all duration-300 shadow-[0_0_0_9999px_rgba(3,7,18,0.7)] ${
-                  isFaceCentered
+                  qualityReport.isAcceptable
                     ? 'border-emerald-400 ring-4 ring-emerald-500/30 shadow-emerald-500/20'
-                    : quality.brightnessStatus === 'too_dark' || quality.brightnessStatus === 'too_bright'
-                    ? 'border-amber-400 ring-4 ring-amber-500/25'
-                    : 'border-blue-400/70 border-dashed animate-pulse'
+                    : qualityReport.facesCount === 0
+                    ? 'border-blue-400/70 border-dashed animate-pulse'
+                    : 'border-amber-400 ring-4 ring-amber-500/25'
                 }`}
               />
 
@@ -396,12 +453,12 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
 
             {/* Overlay de Captura Sequencial */}
             {isCapturingSamples && (
-              <div className="absolute inset-0 bg-slate-950/75 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center space-y-3 z-20">
+              <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center space-y-3 z-20">
                 <Activity className="w-10 h-10 text-emerald-400 animate-spin" />
                 <div className="space-y-1">
-                  <strong className="text-white text-sm block">Capturando Amostras</strong>
+                  <strong className="text-white text-sm block">Extraindo Embeddings Neurais</strong>
                   <p className="text-xs text-slate-300">
-                    Mantenha o rosto imóvel ({sampleProgress} de 5 frames)
+                    Mantenha o rosto alinhado ({sampleProgress} de 5 frames)
                   </p>
                 </div>
                 <div className="w-48 h-2 bg-slate-800 rounded-full overflow-hidden">
@@ -413,14 +470,14 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
               </div>
             )}
 
-            {/* Indicador de Iluminação & Nitidez em Tempo Real */}
+            {/* Indicador de Status em Tempo Real */}
             <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-slate-950/85 backdrop-blur-md border border-slate-700/80 text-[11px] font-medium flex items-center gap-2 text-white shadow-lg whitespace-nowrap">
               <Sun
                 className={`w-3.5 h-3.5 ${
-                  quality.isAcceptable ? 'text-amber-400' : 'text-slate-400'
+                  qualityReport.isAcceptable ? 'text-emerald-400' : 'text-amber-400'
                 }`}
               />
-              <span>{quality.message}</span>
+              <span>{qualityReport.message}</span>
             </div>
           </>
         )}
@@ -434,13 +491,13 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
         )}
       </div>
 
-      {/* Painel do Descritor Facial Extraído */}
+      {/* Painel do Descritor Facial Neural Extraído */}
       {capturedDescriptor && (
         <div className="p-3.5 rounded-2xl bg-blue-950/30 border border-blue-500/30 space-y-2 text-xs animate-in fade-in">
           <div className="flex items-center justify-between text-[11px]">
             <span className="font-semibold text-blue-300 flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Descritor Normalizado L2</span>
+              <span>Embedding ResNet-34 Unitário L2</span>
             </span>
             <span className="font-mono text-emerald-400 font-bold">128 Dimensões</span>
           </div>
@@ -456,12 +513,16 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
         {!capturedPhotoUrl ? (
           <button
             onClick={handleStartMultiFrameCapture}
-            disabled={!cameraActive || isCapturingSamples}
+            disabled={!cameraActive || isCapturingSamples || !modelsReady || !qualityReport.isAcceptable}
             className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500 hover:from-blue-500 hover:to-emerald-400 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all active:scale-98 cursor-pointer disabled:opacity-50"
           >
             <Camera className="w-4 h-4" />
             <span>
-              {isCapturingSamples ? 'Capturando Amostras...' : 'Capturar Biometria (5 Amostras)'}
+              {!modelsReady
+                ? modelStage
+                : isCapturingSamples
+                ? 'Processando Amostras Neurais...'
+                : 'Capturar Biometria Neural (5 Frames)'}
             </span>
           </button>
         ) : (
@@ -490,7 +551,7 @@ export const FacialCaptureEnrollment: React.FC<FacialCaptureEnrollmentProps> = (
               ) : (
                 <>
                   <UserCheck className="w-4 h-4 text-white" />
-                  <span>Gravar Biometria</span>
+                  <span>Ativar Biometria Central</span>
                 </>
               )}
             </button>

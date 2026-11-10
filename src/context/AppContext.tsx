@@ -42,7 +42,6 @@ export const ADMIN_CAETANO_USER: UsuarioAuth = {
   role: 'admin',
   cargo: 'Administrador Geral / Controle Total',
   avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-  senha: '6814871984@Lm',
 };
 
 export const DEFAULT_USER: UsuarioAuth = {
@@ -52,7 +51,6 @@ export const DEFAULT_USER: UsuarioAuth = {
   role: 'supervisor',
   cargo: 'Supervisão Geral de Operações',
   avatarUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80',
-  senha: 'Turno@2026',
 };
 
 // Helper to generate RFC4122 v4 UUID or unique safe ID
@@ -2014,44 +2012,104 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const cleanInput = emailOrCpf.trim().toLowerCase();
     const cleanSenha = senhaDigitada.trim();
 
-    // 0. Checa conta do Administrador Geral com Controle Total (Caetano)
+    if (!cleanInput) {
+      return { success: false, message: 'Informe seu e-mail, CPF ou matrícula.' };
+    }
+    if (!cleanSenha) {
+      return { success: false, message: 'Informe sua senha de acesso.' };
+    }
+
+    const supabase = getSupabase();
+
+    // 1. Tenta autenticação real no Supabase Auth se o input contiver e-mail
+    if (supabase && cleanInput.includes('@')) {
+      try {
+        const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+          email: cleanInput,
+          password: cleanSenha,
+        });
+
+        if (authData?.user && !authErr) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', authData.user.id)
+            .single();
+
+          const role =
+            profile?.role ||
+            authData.user.app_metadata?.role ||
+            (authData.user.email?.includes('adm')
+              ? 'admin'
+              : authData.user.email?.includes('supervisor')
+              ? 'supervisor'
+              : 'funcionario');
+
+          const authUser: UsuarioAuth = {
+            id: authData.user.id,
+            nome:
+              profile?.full_name ||
+              authData.user.user_metadata?.full_name ||
+              authData.user.email?.split('@')[0] ||
+              'Usuário Autenticado',
+            email: authData.user.email || cleanInput,
+            role: role as any,
+            cargo:
+              profile?.cargo ||
+              (role === 'admin'
+                ? 'Administrador Geral'
+                : role === 'supervisor'
+                ? 'Supervisão Geral'
+                : 'Colaborador'),
+            colaboradorId: profile?.colaborador_id || authData.user.id,
+            avatarUrl: profile?.avatar_url || authData.user.user_metadata?.avatar_url,
+          };
+
+          setCurrentUser(authUser);
+          showToast(`Autenticação Supabase confirmada: Bem-vindo(a), ${authUser.nome}!`);
+          return { success: true, message: 'Login realizado com sucesso via Supabase Auth!' };
+        }
+      } catch (authEx) {
+        console.warn('Tentativa com Supabase Auth direcionada para validação integrada:', authEx);
+      }
+    }
+
+    // 2. Administrador Geral Caetano
     if (
       cleanInput === 'caetano.adm@turnocerto.com.br' ||
       cleanInput === 'caetano.adm' ||
-      cleanInput === 'caetano' ||
-      cleanInput === 'caetanoadm'
+      cleanInput === 'caetano'
     ) {
-      if (cleanSenha && cleanSenha !== '6814871984@Lm' && cleanSenha !== 'Turno@2026') {
-        return { success: false, message: 'Senha incorreta para o Administrador Geral. Verifique a senha informada.' };
+      if (cleanSenha !== '6814871984@Lm') {
+        return { success: false, message: 'Senha incorreta para o Administrador Geral. Verifique as credenciais.' };
       }
       const adminUser: UsuarioAuth = {
         ...ADMIN_CAETANO_USER,
-        senha: cleanSenha || '6814871984@Lm',
       };
       setCurrentUser(adminUser);
       showToast('Bem-vindo Administrador Caetano! Controle total liberado.');
       return { success: true, message: 'Login de Administrador realizado com sucesso!' };
     }
 
-    // 1. Checa conta padrão de Supervisão/Admin
+    // 3. Supervisão Operacional
     if (
       cleanInput === 'supervisor@turnocerto.com.br' ||
-      cleanInput === 'admin@turnocerto.com.br' ||
-      cleanInput === 'admin' ||
       cleanInput === 'supervisor' ||
       cleanInput === 'larindoleo@gmail.com'
     ) {
+      if (cleanSenha !== 'Turno@2026') {
+        return { success: false, message: 'Senha incorreta para Supervisão.' };
+      }
       const targetUser: UsuarioAuth = {
         ...DEFAULT_USER,
         email: cleanInput.includes('@') ? cleanInput : 'supervisor@turnocerto.com.br',
-        senha: cleanSenha || 'Turno@2026',
       };
       setCurrentUser(targetUser);
       showToast(`Bem-vinda de volta, ${targetUser.nome}!`);
       return { success: true, message: 'Login realizado com sucesso!' };
     }
 
-    // 2. Procura nos colaboradores cadastrados
+    // 4. Colaboradores cadastrados
     const colab = colaboradores.find((c) => {
       const matchEmail = c.email && c.email.toLowerCase() === cleanInput;
       const matchCpf = c.cpf && c.cpf.replace(/\D/g, '') === cleanInput.replace(/\D/g, '');
@@ -2062,8 +2120,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     if (colab) {
       const senhaEsperada = colab.senha || 'Turno@2026';
-      if (cleanSenha && cleanSenha !== senhaEsperada && cleanSenha !== 'Turno@2026') {
-        return { success: false, message: 'Senha incorreta. Tente novamente ou use a senha padrão.' };
+      if (cleanSenha !== senhaEsperada) {
+        return { success: false, message: 'Senha incorreta. Verifique suas credenciais.' };
       }
 
       const authUser: UsuarioAuth = {
@@ -2075,7 +2133,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         colaboradorId: colab.id,
         avatarUrl: colab.foto,
         postoNome: colab.postoNome,
-        senha: cleanSenha || senhaEsperada,
       };
 
       setCurrentUser(authUser);
@@ -2083,7 +2140,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return { success: true, message: 'Login realizado com sucesso!' };
     }
 
-    return { success: false, message: 'Usuário não encontrado. Verifique seu e-mail, CPF ou matrícula.' };
+    return { success: false, message: 'Usuário não localizado. Verifique e-mail, CPF ou matrícula.' };
   };
 
   const logout = () => {

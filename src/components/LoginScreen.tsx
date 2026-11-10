@@ -44,9 +44,9 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  const handleQuickLogin = (email: string, senhaPadrao = 'Turno@2026') => {
+  const handleQuickLogin = (email: string) => {
     setUsuario(email);
-    setSenha(senhaPadrao);
+    setSenha('');
     setErro(null);
   };
 
@@ -58,7 +58,6 @@ export const LoginScreen: React.FC = () => {
       cargo: 'Administrador Geral Master',
       email: 'caetano.adm@turnocerto.com.br',
       role: 'admin',
-      senhaPadrao: '6814871984@Lm',
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
       badge: 'ADMIN TOTAL',
     },
@@ -67,7 +66,6 @@ export const LoginScreen: React.FC = () => {
       cargo: 'Supervisão Operacional',
       email: 'supervisor@turnocerto.com.br',
       role: 'supervisor',
-      senhaPadrao: 'Turno@2026',
       avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80',
       badge: 'SUPERVISÃO',
     },
@@ -76,7 +74,6 @@ export const LoginScreen: React.FC = () => {
       cargo: laurindo?.funcao || 'Porteiro Líder',
       email: laurindo?.email || 'laurindo.carmo@turnocerto.com.br',
       role: 'funcionario',
-      senhaPadrao: 'Turno@2026',
       avatar: laurindo?.foto || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
       badge: 'PORTARIA',
     },
@@ -85,7 +82,6 @@ export const LoginScreen: React.FC = () => {
       cargo: 'Porteiro Líder',
       email: 'carlos.santos@turnocerto.com.br',
       role: 'funcionario',
-      senhaPadrao: 'Turno@2026',
       avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
       badge: 'PORTARIA',
     },
@@ -231,7 +227,7 @@ export const LoginScreen: React.FC = () => {
                 <button
                   key={idx}
                   type="button"
-                  onClick={() => handleQuickLogin(qc.email, qc.senhaPadrao)}
+                  onClick={() => handleQuickLogin(qc.email)}
                   className={`w-full p-2.5 rounded-xl border flex items-center justify-between text-left transition-all group cursor-pointer ${
                     qc.role === 'admin'
                       ? 'bg-gradient-to-r from-amber-500/10 via-blue-600/10 to-indigo-600/10 border-amber-500/40 hover:border-amber-400/70 shadow-lg shadow-amber-500/5'

@@ -33,15 +33,16 @@ import {
 } from '../../../services/pontoService';
 import {
   analyzeFaceLighting,
-  extract128DFaceDescriptor,
-  compareFaceDescriptors,
-  getStoredBiometriaFacial,
-  saveColaboradorBiometriaFacial,
-  saveColaboradorBiometriaFacialAuthorized,
-  getActiveBiometriaAuthorization,
   FaceMatchResult,
   FaceQualityResult,
 } from '../../../services/facialRecognitionService';
+import {
+  evaluateFaceQuality,
+  extractNeuralFaceEmbedding,
+  verifyFace1x1,
+  Verification1x1Result,
+} from '../../../services/faceDetectionEngine';
+import { getActiveBiometricTemplate } from '../../../services/biometricPersistenceService';
 import { downloadComprovantePontoPDF } from '../../../services/documentService';
 import { useApp } from '../../../context/AppContext';
 import { CondominioBadge } from '../../common/CondominioBadge';
@@ -186,24 +187,19 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
       );
       setGeoResult(val);
       return { coords, val };
-    } catch {
-      const fallbackVal = validateGeofence(
-        posto.latitude || -23.55052,
-        posto.longitude || -46.633308,
-        15,
-        posto,
-        condominios
-      );
-      setCoordsDisplay({
-        lat: posto.latitude || -23.55052,
-        lng: posto.longitude || -46.633308,
-        acc: 15,
-      });
-      setGeoResult(fallbackVal);
-      return {
-        coords: { latitude: posto.latitude || -23.55052, longitude: posto.longitude || -46.633308, accuracy: 15 },
-        val: fallbackVal,
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha na captura do sinal de GPS';
+      const noGpsVal: LocationValidationResult = {
+        hasGps: false,
+        geofenceStatus: 'fora_do_raio',
+        message: `GPS Indisponível: ${msg}. A localização precisa ser comprovada para registro do ponto.`,
+        designatedPosto: posto,
+        isDesignatedPosto: false,
+        isCoveragePunch: false,
       };
+      setCoordsDisplay(null);
+      setGeoResult(noGpsVal);
+      throw new Error(`Sinal de GPS indisponível: ${msg}`);
     }
   }, [condominios, fetchCoordinates, posto, simulatedPostoId]);
 
@@ -339,52 +335,52 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
     // Pequena pausa para transição suave de UI
     await new Promise((r) => setTimeout(r, 450));
 
-    // Extração do vetor descritor 128D
-    const sampleDescriptor = extract128DFaceDescriptor(canvas);
-    const storedBiometria = getStoredBiometriaFacial(colaborador.id);
+    // 1. Verificando Identidade / Biometria Facial 1:1
+    setReadingState('verificando_identidade');
+    await new Promise((r) => setTimeout(r, 350));
 
-    let match: FaceMatchResult;
-    if (storedBiometria && storedBiometria.descriptor) {
-      match = compareFaceDescriptors(sampleDescriptor, storedBiometria.descriptor, 0.52);
-      setFaceMatchResult(match);
-      setIsFirstEnrollment(false);
+    // Consulta template ativo central no Supabase
+    const activeTemplate = await getActiveBiometricTemplate(colaborador.id);
 
-      if (!match.isMatch) {
-        setReadingState('erro');
-        setErrorMessage(
-          `Divergência Biométrica Facial: O rosto detectado não correspondeu ao padrão cadastrado do colaborador (${match.similarityPercent}% de similaridade). Reposicione o rosto sem óculos escuros ou máscara e tente novamente.`
-        );
-        return;
-      }
-    } else {
-      // Verifica se possui autorização ativa do supervisor para primeiro cadastro
-      const authAtiva = getActiveBiometriaAuthorization(colaborador.id);
-      if (!authAtiva) {
-        setReadingState('erro');
-        setErrorMessage(
-          'Biometria Facial Obrigatória: Este colaborador ainda não possui biometria facial cadastrada nem autorização ativa do supervisor. Solicite a liberação no seu perfil antes de registrar o ponto digital.'
-        );
-        return;
-      }
-
-      // Cadastra com autorização válida e consome o token
-      await saveColaboradorBiometriaFacialAuthorized(
-        colaborador.id,
-        colaborador.nome,
-        sampleDescriptor,
-        dataUrl,
-        authAtiva.tokenAutorizacao || 'TOKEN_AUTORIZADO'
+    if (!activeTemplate || !activeTemplate.embedding || activeTemplate.status === 'legado_necessita_recadastro') {
+      setReadingState('erro');
+      setErrorMessage(
+        'Biometria facial não disponível. Solicite cadastro ou atualização ao seu supervisor.'
       );
-      match = {
-        isMatch: true,
-        distance: 0.12,
-        similarityPercent: 98,
-        threshold: 0.52,
-        confidenceLabel: 'Alta Confiabilidade',
-        modelQuality: 98,
-      };
-      setFaceMatchResult(match);
-      setIsFirstEnrollment(true);
+      return;
+    }
+
+    // Extrai o embedding neural da captura
+    const embRes = await extractNeuralFaceEmbedding(canvas);
+    if (!embRes.embedding || !embRes.quality.isAcceptable) {
+      setReadingState('erro');
+      setErrorMessage(
+        embRes.quality.message ||
+          'Qualidade da imagem facial insuficiente. Posicione seu rosto no centro com boa iluminação e tente novamente.'
+      );
+      return;
+    }
+
+    // Executa comparação biométrica estritamente 1:1
+    const matchRes = verifyFace1x1(embRes.embedding, activeTemplate.embedding, 0.50);
+
+    const match: FaceMatchResult = {
+      isMatch: matchRes.isMatch,
+      distance: matchRes.distance,
+      similarityPercent: matchRes.similarityPercent,
+      threshold: matchRes.threshold,
+      confidenceLabel: matchRes.confidenceLabel as any,
+      modelQuality: 98,
+    };
+    setFaceMatchResult(match);
+    setIsFirstEnrollment(false);
+
+    if (!match.isMatch) {
+      setReadingState('erro');
+      setErrorMessage(
+        `Divergência Biométrica Facial: O rosto detectado não correspondeu ao padrão cadastrado do colaborador (${match.similarityPercent}% de similaridade, distância: ${match.distance}). Reposicione o rosto sem óculos escuros ou boné e tente novamente.`
+      );
+      return;
     }
 
     setReadingState('identidade_confirmada');
