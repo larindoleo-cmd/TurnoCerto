@@ -145,7 +145,9 @@ export interface AlertaOperacional {
     | 'tentativa_ponto_fora_posto'
     | 'ponto_posto_cobertura'
     | 'posto_divergente'
-    | 'solicitacao_biometria';
+    | 'solicitacao_biometria'
+    | 'solicitacao_senha'
+    | 'biometria_pendente';
   gravidade: 'critica' | 'moderada' | 'informativa';
   titulo: string;
   descricao: string;

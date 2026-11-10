@@ -185,6 +185,25 @@ interface AppContextType {
   setTrocarSenhaModalOpen: (open: boolean) => void;
   trocarSenha: (senhaAtual: string, novaSenha: string) => Promise<{ success: boolean; message: string }>;
 
+  // Gestão de Senha do Colaborador (Supervisor & Ajuda com Acesso)
+  redefinirSenhaModalOpen: boolean;
+  setRedefinirSenhaModalOpen: (open: boolean) => void;
+  colaboradorParaRedefinirSenha: Colaborador | null;
+  setColaboradorParaRedefinirSenha: (colab: Colaborador | null) => void;
+  openRedefinirSenhaModal: (colab: Colaborador) => void;
+  redefinirSenhaColaborador: (
+    colaboradorId: string,
+    novaSenha: string,
+    supervisor?: { id: string; nome: string }
+  ) => Promise<{ success: boolean; message: string; novaSenhaGerada?: string }>;
+  solicitarAjudaSenha: (
+    identificador: string,
+    contatoTelefone?: string,
+    observacao?: string
+  ) => Promise<{ success: boolean; message: string; colaboradorLocalizado?: Colaborador }>;
+  ajudaAcessoModalOpen: boolean;
+  setAjudaAcessoModalOpen: (open: boolean) => void;
+
   // Solicitações e Autorizações de Biometria Facial
   solicitacoesBiometria: SolicitacaoBiometriaFacial[];
   solicitarCadastroFacial: (
@@ -397,6 +416,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     isNovo?: boolean;
   } | null>(null);
   const [trocarSenhaModalOpen, setTrocarSenhaModalOpen] = useState(false);
+  const [redefinirSenhaModalOpen, setRedefinirSenhaModalOpen] = useState(false);
+  const [colaboradorParaRedefinirSenha, setColaboradorParaRedefinirSenha] = useState<Colaborador | null>(null);
+  const [ajudaAcessoModalOpen, setAjudaAcessoModalOpen] = useState(false);
 
   // Toast feedback
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -2191,6 +2213,135 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return { success: true, message: 'Senha alterada com sucesso!' };
   };
 
+  const openRedefinirSenhaModal = (colab: Colaborador) => {
+    setColaboradorParaRedefinirSenha(colab);
+    setRedefinirSenhaModalOpen(true);
+  };
+
+  const redefinirSenhaColaborador = async (
+    colaboradorId: string,
+    novaSenha: string,
+    supervisor?: { id: string; nome: string }
+  ): Promise<{ success: boolean; message: string; novaSenhaGerada?: string }> => {
+    if (!novaSenha || novaSenha.trim().length < 6) {
+      return { success: false, message: 'A nova senha deve ter no mínimo 6 caracteres.' };
+    }
+
+    const cleanNova = novaSenha.trim();
+    const sup =
+      supervisor ||
+      (currentUser
+        ? { id: currentUser.id, nome: currentUser.nome }
+        : { id: 'usr-supervisor', nome: 'Supervisor Operacional' });
+
+    let colabNome = 'Colaborador';
+    setColaboradores((prev) =>
+      prev.map((c) => {
+        if (c.id === colaboradorId) {
+          colabNome = c.nome;
+          return { ...c, senha: cleanNova };
+        }
+        return c;
+      })
+    );
+
+    // Persiste no Supabase
+    const client = getSupabase();
+    if (client) {
+      try {
+        await client
+          .from('colaboradores')
+          .update({
+            senha: cleanNova,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', colaboradorId);
+      } catch (err) {
+        console.warn('Erro ao atualizar senha no Supabase:', err);
+      }
+    }
+
+    // Marca qualquer alerta de esquecimento de senha deste colaborador como resolvido
+    const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    setAlertas((prev) =>
+      prev.map((a) =>
+        a.colaboradorId === colaboradorId && a.tipo === 'solicitacao_senha'
+          ? { ...a, resolvido: true, resolvidoPor: sup.nome, resolvidoEm: agoraHora }
+          : a
+      )
+    );
+
+    showToast(`Senha de ${colabNome} redefinida com sucesso!`);
+    return { success: true, message: 'Senha redefinida com sucesso!', novaSenhaGerada: cleanNova };
+  };
+
+  const solicitarAjudaSenha = async (
+    identificador: string,
+    contatoTelefone?: string,
+    observacao?: string
+  ): Promise<{ success: boolean; message: string; colaboradorLocalizado?: Colaborador }> => {
+    if (!identificador || !identificador.trim()) {
+      return { success: false, message: 'Informe seu CPF, e-mail ou matrícula.' };
+    }
+
+    const cleanInput = identificador.trim().toLowerCase();
+    const cleanDigits = identificador.replace(/\D/g, '');
+
+    const colab = colaboradores.find((c) => {
+      const mEmail = c.email && c.email.toLowerCase() === cleanInput;
+      const mCpf = c.cpf && c.cpf.replace(/\D/g, '') === cleanDigits && cleanDigits.length >= 8;
+      const mMatricula = c.matricula && c.matricula.toLowerCase() === cleanInput;
+      const mNome = c.nome && c.nome.toLowerCase().includes(cleanInput) && cleanInput.length >= 4;
+      return mEmail || mCpf || mMatricula || mNome;
+    });
+
+    const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const alertaId = `alerta-senha-${colab?.id || 'anon'}-${Date.now()}`;
+
+    const novoAlerta: AlertaOperacional = {
+      id: alertaId,
+      tipo: 'solicitacao_senha',
+      gravidade: 'critica',
+      titulo: '🔑 Solicitação de Ajuda com Senha / Acesso',
+      descricao: colab
+        ? `O colaborador ${colab.nome} (Matrícula: ${colab.matricula || 'N/A'}, Posto: ${colab.postoNome || 'N/A'}) esqueceu sua senha e precisa de uma nova senha provisória. Contato: ${contatoTelefone || colab.telefone || 'N/A'}.${observacao ? ` Mensagem: "${observacao}"` : ''}`
+        : `Usuário informou esquecimento de senha para o identificador "${identificador}". Contato: ${contatoTelefone || 'N/A'}.${observacao ? ` Mensagem: "${observacao}"` : ''}`,
+      postoId: colab?.condominioId || '',
+      postoNome: colab?.postoNome || 'Geral',
+      colaboradorId: colab?.id,
+      colaboradorNome: colab?.nome || identificador,
+      horario: agoraHora,
+      resolvido: false,
+    };
+
+    setAlertas((prev) => [novoAlerta, ...prev]);
+
+    const client = getSupabase();
+    if (client) {
+      try {
+        await client.from('alertas').insert({
+          id: alertaId,
+          tipo: 'solicitacao_senha',
+          gravidade: 'critica',
+          titulo: novoAlerta.titulo,
+          descricao: novoAlerta.descricao,
+          posto_id: novoAlerta.postoId || null,
+          colaborador_id: novoAlerta.colaboradorId || null,
+          created_at: new Date().toISOString(),
+          resolvido: false,
+        });
+      } catch (err) {
+        console.warn('Erro ao salvar alerta no Supabase:', err);
+      }
+    }
+
+    return {
+      success: true,
+      message: 'Solicitação registrada! O supervisor foi notificado e pode liberar sua nova senha.',
+      colaboradorLocalizado: colab,
+    };
+  };
+
   // ============================================================================
   // MÉTODOS DE AUTORIZAÇÃO E GESTÃO DE BIOMETRIA FACIAL
   // ============================================================================
@@ -2395,6 +2546,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         trocarSenhaModalOpen,
         setTrocarSenhaModalOpen,
         trocarSenha,
+        redefinirSenhaModalOpen,
+        setRedefinirSenhaModalOpen,
+        colaboradorParaRedefinirSenha,
+        setColaboradorParaRedefinirSenha,
+        openRedefinirSenhaModal,
+        redefinirSenhaColaborador,
+        solicitarAjudaSenha,
+        ajudaAcessoModalOpen,
+        setAjudaAcessoModalOpen,
         solicitacoesBiometria,
         solicitarCadastroFacial,
         aprovarSolicitacaoBiometria,

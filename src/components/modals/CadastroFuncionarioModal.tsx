@@ -14,6 +14,7 @@ import {
   Sparkles,
   Trash2,
   UserCheck,
+  KeyRound,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { FuncaoColaborador, NovoFuncionarioPayload, StatusColaborador } from '../../types';
@@ -79,6 +80,9 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
     rg: '',
     telefone: '',
     dataNascimento: '',
+    email: '',
+    senha: 'Turno@2026',
+    role: 'funcionario',
     // Etapa 2
     pis: '',
     ctps: '',
@@ -152,6 +156,9 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
         valorVA: colaboradorParaEditar.valorVA !== undefined ? colaboradorParaEditar.valorVA : 220.0,
         valorExtraFT: colaboradorParaEditar.valorExtraFT !== undefined ? colaboradorParaEditar.valorExtraFT : 160.0,
         valorBonus: colaboradorParaEditar.valorBonus || 0,
+        email: colaboradorParaEditar.email || '',
+        senha: colaboradorParaEditar.senha || 'Turno@2026',
+        role: colaboradorParaEditar.role || 'funcionario',
       });
       setStatus(colaboradorParaEditar.status || 'no_posto');
       parseAddress(colaboradorParaEditar.endereco || '');
@@ -163,6 +170,9 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
         rg: '',
         telefone: '',
         dataNascimento: '',
+        email: '',
+        senha: 'Turno@2026',
+        role: 'funcionario',
         pis: '',
         ctps: '',
         nomeMae: '',
@@ -659,6 +669,81 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
                       onChange={(e) => setFormData({ ...formData, dataNascimento: e.target.value })}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 text-xs"
                     />
+                  </div>
+                </div>
+
+                {/* Seção de Credenciais de Acesso ao Sistema */}
+                <div className="pt-3 border-t border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                      <KeyRound className="w-3.5 h-3.5 text-blue-400" />
+                      <span>Credenciais de Acesso ao TurnoCerto</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">Login e senha do colaborador</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-slate-300 font-semibold text-xs">
+                          E-mail para Login
+                        </label>
+                        {formData.nome && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const cleanNome = formData.nome.toLowerCase().trim().replace(/\s+/g, '.');
+                              setFormData({ ...formData, email: `${cleanNome}@turnocerto.com.br` });
+                            }}
+                            className="text-[10px] text-blue-400 hover:underline cursor-pointer"
+                          >
+                            Gerar e-mail
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="email"
+                        value={formData.email || ''}
+                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                        placeholder="Ex: colaborador@turnocerto.com.br"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 text-xs font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-slate-300 font-semibold text-xs">
+                          Senha de Acesso
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const num = Math.floor(1000 + Math.random() * 9000);
+                              setFormData({ ...formData, senha: `Turno@${num}` });
+                            }}
+                            className="text-[10px] text-blue-400 hover:underline cursor-pointer"
+                          >
+                            Gerar aleatória
+                          </button>
+                          <span className="text-slate-600">·</span>
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, senha: 'Turno@2026' })}
+                            className="text-[10px] text-amber-400 hover:underline cursor-pointer"
+                          >
+                            Padrão
+                          </button>
+                        </div>
+                      </div>
+                      <input
+                        type="text"
+                        value={formData.senha || 'Turno@2026'}
+                        onChange={(e) => setFormData({ ...formData, senha: e.target.value })}
+                        placeholder="Turno@2026"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 text-xs font-mono font-bold text-emerald-300"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Bell, AlertTriangle, CheckCircle2, Clock, ShieldAlert, MapPin, Navigation, Scan, Check, XCircle } from 'lucide-react';
+import { X, Bell, AlertTriangle, CheckCircle2, Clock, ShieldAlert, MapPin, Navigation, Scan, Check, XCircle, KeyRound } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { CondominioBadge } from './common/CondominioBadge';
 
@@ -15,6 +15,7 @@ export const NotificationModal: React.FC = () => {
     solicitacoesBiometria,
     aprovarSolicitacaoBiometria,
     rejeitarSolicitacaoBiometria,
+    openRedefinirSenhaModal,
   } = useApp();
 
   const [processingId, setProcessingId] = useState<string | null>(null);
@@ -288,6 +289,7 @@ export const NotificationModal: React.FC = () => {
 
                     const isTentativaFora = alerta.tipo === 'tentativa_ponto_fora_posto';
                     const isCobertura = alerta.tipo === 'ponto_posto_cobertura';
+                    const isSenha = alerta.tipo === 'solicitacao_senha';
 
                     return (
                       <div
@@ -297,6 +299,8 @@ export const NotificationModal: React.FC = () => {
                             ? 'bg-red-950/50 border-red-500/60 shadow-red-950/30'
                             : isCobertura
                             ? 'bg-blue-950/50 border-blue-500/60 shadow-blue-950/30'
+                            : isSenha
+                            ? 'bg-amber-950/40 border-amber-500/60 shadow-amber-950/30'
                             : 'bg-slate-900/80 border-slate-700/60'
                         }`}
                       >
@@ -306,6 +310,8 @@ export const NotificationModal: React.FC = () => {
                               <ShieldAlert className="w-4 h-4 text-red-400 shrink-0 mt-0.5 animate-pulse" />
                             ) : isCobertura ? (
                               <MapPin className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                            ) : isSenha ? (
+                              <KeyRound className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                             ) : (
                               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                             )}
@@ -317,6 +323,8 @@ export const NotificationModal: React.FC = () => {
                                       ? 'text-red-200'
                                       : isCobertura
                                       ? 'text-cyan-200'
+                                      : isSenha
+                                      ? 'text-amber-200'
                                       : 'text-slate-100'
                                   }`}
                                 >
@@ -330,6 +338,11 @@ export const NotificationModal: React.FC = () => {
                                 {isCobertura && (
                                   <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 uppercase">
                                     Cobertura
+                                  </span>
+                                )}
+                                {isSenha && (
+                                  <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase">
+                                    Recuperação de Senha
                                   </span>
                                 )}
                               </div>
@@ -359,6 +372,18 @@ export const NotificationModal: React.FC = () => {
                             <span className="text-[11px] text-slate-300 font-medium truncate">{alerta.postoNome}</span>
                           </div>
                           <div className="flex items-center gap-2">
+                            {isSenha && colab && (
+                              <button
+                                onClick={() => {
+                                  openRedefinirSenhaModal(colab);
+                                  setNotificationModalOpen(false);
+                                }}
+                                className="px-2.5 py-1 text-[11px] font-bold text-amber-950 bg-amber-400 hover:bg-amber-300 rounded-lg active:scale-95 cursor-pointer flex items-center gap-1 shadow-md shadow-amber-400/20"
+                              >
+                                <KeyRound className="w-3 h-3" />
+                                <span>Redefinir Senha</span>
+                              </button>
+                            )}
                             {colab && (
                               <a
                                 href={`tel:${colab.telefone || '1199999999'}`}

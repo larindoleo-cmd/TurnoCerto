@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Pencil,
   Scan,
+  KeyRound,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Colaborador, StatusColaborador } from '../../types';
@@ -36,6 +37,7 @@ export const EquipeTab: React.FC = () => {
     openAlocarModal,
     setCadastroModalOpen,
     openEditarFuncionarioModal,
+    openRedefinirSenhaModal,
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -394,6 +396,15 @@ export const EquipeTab: React.FC = () => {
                   </div>
 
                   <div className="flex items-center gap-1.5 ml-auto">
+                    <button
+                      onClick={() => openRedefinirSenhaModal(colab)}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-semibold active:scale-95 transition-all cursor-pointer"
+                      title="Redefinir senha de acesso deste colaborador"
+                    >
+                      <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Senha</span>
+                    </button>
+
                     <button
                       onClick={() => openEditarFuncionarioModal(colab)}
                       className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-semibold active:scale-95 transition-all"

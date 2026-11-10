@@ -15,9 +15,16 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { SolicitarAjudaAcessoModal } from './modals/SolicitarAjudaAcessoModal';
 
 export const LoginScreen: React.FC = () => {
-  const { login, colaboradores, setTrocarSenhaModalOpen, setSupabaseModalOpen } = useApp();
+  const {
+    login,
+    colaboradores,
+    setTrocarSenhaModalOpen,
+    setSupabaseModalOpen,
+    setAjudaAcessoModalOpen,
+  } = useApp();
 
   const [usuario, setUsuario] = useState('');
   const [senha, setSenha] = useState('');
@@ -164,11 +171,12 @@ export const LoginScreen: React.FC = () => {
                 </label>
                 <button
                   type="button"
-                  onClick={() => setTrocarSenhaModalOpen(true)}
-                  className="text-[11px] text-blue-400 hover:text-blue-300 font-medium hover:underline flex items-center gap-1"
+                  onClick={() => setAjudaAcessoModalOpen(true)}
+                  className="text-[11px] text-amber-400 hover:text-amber-300 font-medium hover:underline flex items-center gap-1 cursor-pointer"
+                  title="Esqueceu a senha? Solicite ajuda ao seu supervisor"
                 >
                   <Key className="w-3 h-3" />
-                  <span>Trocar Senha</span>
+                  <span>Esqueceu a Senha?</span>
                 </button>
               </div>
               <div className="relative">
@@ -210,6 +218,18 @@ export const LoginScreen: React.FC = () => {
                 </>
               )}
             </button>
+
+            {/* Ajuda do supervisor com senha */}
+            <div className="text-center pt-0.5">
+              <button
+                type="button"
+                onClick={() => setAjudaAcessoModalOpen(true)}
+                className="text-[11px] text-slate-400 hover:text-blue-300 transition-colors inline-flex items-center gap-1.5 cursor-pointer py-1"
+              >
+                <span>Esqueceu ou perdeu a senha?</span>
+                <span className="text-blue-400 font-semibold underline">Ajuda do Supervisor</span>
+              </button>
+            </div>
           </form>
 
           {/* Quick Demo Accounts */}
@@ -290,6 +310,9 @@ export const LoginScreen: React.FC = () => {
           </p>
         </div>
       </div>
+
+      {/* Modal de Ajuda com Senha para Funcionários */}
+      <SolicitarAjudaAcessoModal />
     </div>
   );
 };

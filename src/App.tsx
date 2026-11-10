@@ -22,6 +22,7 @@ import { usePWAInstall } from './components/usePWAInstall';
 import { PWAInstallModal } from './components/PWAInstallModal';
 import { LoginScreen } from './components/LoginScreen';
 import { ChangePasswordModal } from './components/modals/ChangePasswordModal';
+import { RedefinirSenhaColaboradorModal } from './components/modals/RedefinirSenhaColaboradorModal';
 import { CollaboratorView } from './components/collaborator/CollaboratorView';
 
 const AppContent: React.FC = () => {
@@ -191,6 +192,7 @@ const AppContent: React.FC = () => {
       <NotificationModal />
       <SupabaseSettingsModal />
       <ChangePasswordModal />
+      <RedefinirSenhaColaboradorModal />
 
       <PWAInstallModal
         isOpen={pwaModalOpen}
