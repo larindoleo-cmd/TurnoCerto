@@ -1,0 +1,6 @@
+{
+  "name": "TurnoCerto - Gestão de Terceirização e Escalas",
+  "description": "Software mobile-first de gestão empresarial terceirizada para condomínios e empresas. Controle operacional de escalas, postos 360°, coberturas e RH.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

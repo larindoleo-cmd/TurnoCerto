@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+@keyframes scanline {
+  0% {
+    top: 4%;
+    opacity: 0.6;
+  }
+  50% {
+    top: 92%;
+    opacity: 1;
+  }
+  100% {
+    top: 4%;
+    opacity: 0.6;
+  }
+}
+
+.animate-scanline {
+  animation: scanline 2.4s ease-in-out infinite;
+}

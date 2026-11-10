@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="tc-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB" />
+      <stop offset="50%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#10B981" />
+    </linearGradient>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="100%" stop-color="#070B19" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#bg-grad)" />
+  <rect x="16" y="16" width="480" height="480" rx="112" stroke="#3B82F6" stroke-opacity="0.3" stroke-width="8" />
+  
+  <!-- Outer Shield -->
+  <path d="M256 96L384 152V264C384 340 329 408 256 428C183 408 128 340 128 264V152L256 96Z" fill="#1E293B" stroke="url(#tc-grad)" stroke-width="16" stroke-linejoin="round" />
+  
+  <!-- Clock & Check Shift Motif -->
+  <circle cx="256" cy="256" r="64" stroke="#60A5FA" stroke-width="14" stroke-dasharray="8 6" />
+  <path d="M256 220V256L282 272" stroke="#10B981" stroke-width="12" stroke-linecap="round" />
+  
+  <!-- Verification checkmark -->
+  <path d="M220 340L246 364L300 310" stroke="#10B981" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

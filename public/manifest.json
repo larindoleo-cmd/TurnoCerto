@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "TurnoCerto - Gestão de Terceirização e Escalas",
+  "short_name": "TurnoCerto",
+  "description": "Software mobile-first de gestão empresarial terceirizada para condomínios e empresas.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070B19",
+  "theme_color": "#070B19",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
