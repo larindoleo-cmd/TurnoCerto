@@ -23,6 +23,8 @@ import {
   INITIAL_PONTO_REGISTROS,
   INITIAL_ATESTADOS,
   INITIAL_EMPRESA_INFO,
+  DEFAULT_USER,
+  ADMIN_CAETANO_USER,
 } from '../data/mockData';
 import { getSupabase } from '../lib/supabase';
 import {
@@ -1245,10 +1247,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               tipo: condoVinculado.tipo || 'Residencial',
               cnpj: condoVinculado.cnpj || null,
               endereco: condoVinculado.endereco || 'Endereço não informado',
-              bairro: condoVinculado.bairro || 'Centro',
-              cidade: condoVinculado.cidade || 'São Paulo - SP',
-              lat: condoVinculado.latitude !== undefined ? Number(condoVinculado.latitude) : -23.55052,
-              lng: condoVinculado.longitude !== undefined ? Number(condoVinculado.longitude) : -46.633308,
+              latitude: condoVinculado.latitude !== undefined && condoVinculado.latitude !== null ? Number(condoVinculado.latitude) : null,
+              longitude: condoVinculado.longitude !== undefined && condoVinculado.longitude !== null ? Number(condoVinculado.longitude) : null,
+              raio_gps_metros: condoVinculado.raioGpsMetros || 150,
+              lat: condoVinculado.latitude !== undefined && condoVinculado.latitude !== null ? Number(condoVinculado.latitude) : null,
+              lng: condoVinculado.longitude !== undefined && condoVinculado.longitude !== null ? Number(condoVinculado.longitude) : null,
               raio_tolerancia_metros: condoVinculado.raioGpsMetros || 150,
               status: condoVinculado.status || 'operacional',
               vagas_contratadas: condoVinculado.vagasContratadas || 2,
@@ -1475,8 +1478,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       foto: dados.foto || 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=500&auto=format&fit=crop&q=80',
       icone: dados.icone || 'Building2',
       cor: dados.cor || '#3B82F6',
-      latitude: dados.latitude !== undefined ? dados.latitude : -23.55052,
-      longitude: dados.longitude !== undefined ? dados.longitude : -46.633308,
+      latitude: dados.latitude !== undefined && dados.latitude !== null ? dados.latitude : undefined,
+      longitude: dados.longitude !== undefined && dados.longitude !== null ? dados.longitude : undefined,
       raioGpsMetros: dados.raioGpsMetros !== undefined ? dados.raioGpsMetros : 150,
       metodoCalibracaoGps: dados.metodoCalibracaoGps || 'manual',
       calibradoEm: dados.calibradoEm || new Date().toISOString(),
@@ -1509,8 +1512,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           telefone_sindico: novoCondo.telefoneSindico || null,
           instrucoes_guarita: novoCondo.instrucoesGuarita || null,
           foto_url: novoCondo.foto || null,
-          lat: novoCondo.latitude !== undefined ? Number(novoCondo.latitude) : -23.55052,
-          lng: novoCondo.longitude !== undefined ? Number(novoCondo.longitude) : -46.633308,
+          latitude: novoCondo.latitude !== undefined && novoCondo.latitude !== null ? Number(novoCondo.latitude) : null,
+          longitude: novoCondo.longitude !== undefined && novoCondo.longitude !== null ? Number(novoCondo.longitude) : null,
+          raio_gps_metros: novoCondo.raioGpsMetros || 150,
+          lat: novoCondo.latitude !== undefined && novoCondo.latitude !== null ? Number(novoCondo.latitude) : null,
+          lng: novoCondo.longitude !== undefined && novoCondo.longitude !== null ? Number(novoCondo.longitude) : null,
           raio_tolerancia_metros: novoCondo.raioGpsMetros || 150,
           updated_at: new Date().toISOString(),
         };
@@ -1575,11 +1581,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (dados.coberturaPercentual !== undefined) payload.cobertura_percentual = dados.coberturaPercentual;
         if (dados.contatoSindico !== undefined) payload.contato_sindico = dados.contatoSindico;
         if (dados.telefoneSindico !== undefined) payload.telefone_sindico = dados.telefoneSindico;
-        if (dados.instrucoesGuarita !== undefined) payload.instrucoes_guarita = dados.instrucoesGuarita;
-        if (dados.foto !== undefined) payload.foto_url = dados.foto;
-        if (dados.latitude !== undefined) payload.lat = Number(dados.latitude);
-        if (dados.longitude !== undefined) payload.lng = Number(dados.longitude);
-        if (dados.raioGpsMetros !== undefined) payload.raio_tolerancia_metros = Number(dados.raioGpsMetros);
+        if (dados.latitude !== undefined) {
+          payload.latitude = dados.latitude !== null ? Number(dados.latitude) : null;
+          payload.lat = payload.latitude;
+        }
+        if (dados.longitude !== undefined) {
+          payload.longitude = dados.longitude !== null ? Number(dados.longitude) : null;
+          payload.lng = payload.longitude;
+        }
+        if (dados.raioGpsMetros !== undefined) {
+          payload.raio_gps_metros = Number(dados.raioGpsMetros);
+          payload.raio_tolerancia_metros = Number(dados.raioGpsMetros);
+        }
 
         const { error: updErr } = await client.from('condominios').update(payload).eq('id', id);
         if (updErr) {
@@ -1943,11 +1956,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             telefoneSindico: rc.telefone_sindico || '(11) 98765-4321',
             instrucoesGuarita: rc.instrucoes_guarita || 'Controle de portaria.',
             foto: rc.foto_url || 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=500&auto=format&fit=crop&q=80',
-            latitude: rc.lat !== undefined && rc.lat !== null ? Number(rc.lat) : -23.55052,
-            longitude: rc.lng !== undefined && rc.lng !== null ? Number(rc.lng) : -46.633308,
-            raioGpsMetros: rc.raio_tolerancia_metros || 150,
-            icone: 'Building2',
-            cor: '#3B82F6',
+            latitude: rc.latitude !== undefined && rc.latitude !== null ? Number(rc.latitude) : (rc.lat !== undefined && rc.lat !== null ? Number(rc.lat) : undefined),
+            longitude: rc.longitude !== undefined && rc.longitude !== null ? Number(rc.longitude) : (rc.lng !== undefined && rc.lng !== null ? Number(rc.lng) : undefined),
+            raioGpsMetros: rc.raio_gps_metros || rc.raio_tolerancia_metros || 150,
+            icone: rc.icone || 'Building2',
+            cor: rc.cor || '#3B82F6',
           }))
         );
       }
