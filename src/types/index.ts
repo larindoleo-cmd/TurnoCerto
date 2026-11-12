@@ -53,8 +53,7 @@ export interface Colaborador {
   valorBonus?: number;
   // Credenciais de Acesso ao Painel
   email?: string;
-  senha?: string;
-  role?: 'admin' | 'supervisor' | 'funcionario';
+  role?: 'admin' | 'supervisor' | 'rh' | 'funcionario';
   primeiroAcessoConcluido?: boolean;
 }
 
@@ -68,8 +67,7 @@ export interface NovoFuncionarioPayload {
   dataNascimento: string;
   // Credenciais de Acesso ao Painel do Colaborador
   email?: string;
-  senha?: string;
-  role?: 'admin' | 'supervisor' | 'funcionario';
+  role?: 'admin' | 'supervisor' | 'rh' | 'funcionario';
   // Etapa 2
   pis: string;
   ctps: string;
@@ -265,12 +263,11 @@ export interface UsuarioAuth {
   id: string;
   nome: string;
   email: string;
-  role: 'admin' | 'supervisor' | 'funcionario';
+  role: 'admin' | 'supervisor' | 'rh' | 'funcionario';
   cargo?: string;
   colaboradorId?: string;
   avatarUrl?: string;
   postoNome?: string;
-  senha?: string;
 }
 
 export type CollaboratorTabType =
