@@ -35,23 +35,7 @@ import {
   getUltimaSolicitacaoColaborador as getUltimaBiometriaService,
 } from '../services/facialRecognitionService';
 
-export const ADMIN_CAETANO_USER: UsuarioAuth = {
-  id: 'usr-caetano-adm',
-  nome: 'Caetano (Administrador Geral)',
-  email: 'caetano.adm@turnocerto.com.br',
-  role: 'admin',
-  cargo: 'Administrador Geral / Controle Total',
-  avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-};
 
-export const DEFAULT_USER: UsuarioAuth = {
-  id: 'usr-supervisor',
-  nome: 'Supervisão Geral',
-  email: 'supervisor@turnocerto.com.br',
-  role: 'supervisor',
-  cargo: 'Supervisão Geral de Operações',
-  avatarUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80',
-};
 
 // Helper to generate RFC4122 v4 UUID or unique safe ID
 function generateSafeId(prefix = 'tc'): string {
@@ -424,16 +408,105 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Authenticated user
-  const [currentUser, setCurrentUser] = useState<UsuarioAuth | null>(() => {
-    try {
-      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_user`);
-      if (saved === 'null') return null;
-      return saved ? JSON.parse(saved) : DEFAULT_USER;
-    } catch {
-      return DEFAULT_USER;
+  // Authenticated user - Fonte única: Supabase Auth (Strict Zero-Trust)
+  const [currentUser, setCurrentUser] = useState<UsuarioAuth | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+
+  // Sincronização em tempo real com a sessão do Supabase Auth
+  useEffect(() => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      setCurrentUser(null);
+      setAuthLoading(false);
+      return;
     }
-  });
+
+    const syncSessionUser = async (user: any) => {
+      if (!user) {
+        setCurrentUser(null);
+        setAuthLoading(false);
+        return;
+      }
+
+      try {
+        // Busca perfil estritamente pelo auth_user_id ou id correspondente ao auth.uid()
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .or(`auth_user_id.eq.${user.id},id.eq.${user.id}`)
+          .maybeSingle();
+
+        let colabNome = profile?.full_name || profile?.nome || user.user_metadata?.full_name || user.email?.split('@')[0] || 'Usuário';
+        let colabCargo = profile?.cargo;
+        let colabPosto = profile?.posto_nome;
+        let colabFoto = profile?.foto_url || user.user_metadata?.avatar_url;
+
+        if (profile?.colaborador_id) {
+          const { data: colab } = await supabase
+            .from('colaboradores')
+            .select('*')
+            .eq('id', profile.colaborador_id)
+            .maybeSingle();
+          if (colab) {
+            colabNome = colab.nome || colabNome;
+            colabCargo = colab.funcao || colabCargo;
+            colabPosto = colab.postoNome || colab.posto_nome || colabPosto;
+            colabFoto = colab.foto || colab.foto_url || colabFoto;
+          }
+        }
+
+        // Papel determinado exclusivamente pelo perfil no banco de dados (profile.role)
+        const role = profile?.role || user.app_metadata?.role || 'funcionario';
+
+        const authUser: UsuarioAuth = {
+          id: user.id,
+          nome: colabNome,
+          email: user.email || '',
+          role: role as any,
+          cargo: colabCargo || (role === 'admin' ? 'Administrador Geral' : role === 'supervisor' ? 'Supervisor Operacional' : role === 'rh' ? 'Recursos Humanos' : 'Colaborador'),
+          colaboradorId: profile?.colaborador_id || undefined,
+          avatarUrl: colabFoto,
+          postoNome: colabPosto,
+        };
+
+        setCurrentUser(authUser);
+      } catch (err) {
+        console.warn('Erro ao carregar perfil autenticado do Supabase:', err);
+        setCurrentUser(null);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+
+    // 1. Carrega sessão ativa
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        syncSessionUser(session.user);
+      } else {
+        setCurrentUser(null);
+        setAuthLoading(false);
+      }
+    }).catch(() => {
+      setCurrentUser(null);
+      setAuthLoading(false);
+    });
+
+    // 2. Escuta eventos do Supabase Auth
+    const { data: authSub } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        if (session?.user) {
+          await syncSessionUser(session.user);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setCurrentUser(null);
+        setAuthLoading(false);
+      }
+    });
+
+    return () => {
+      authSub.subscription.unsubscribe();
+    };
+  }, []);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -1114,7 +1187,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       valorExtraFT: dados.valorExtraFT,
       valorBonus: dados.valorBonus,
       email: dados.email || undefined,
-      senha: dados.senha || undefined,
       role: dados.role || 'funcionario',
       primeiroAcessoConcluido: false,
     };
