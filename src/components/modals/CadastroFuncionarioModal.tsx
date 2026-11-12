@@ -81,7 +81,6 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
     telefone: '',
     dataNascimento: '',
     email: '',
-    senha: 'Turno@2026',
     role: 'funcionario',
     // Etapa 2
     pis: '',
@@ -157,7 +156,6 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
         valorExtraFT: colaboradorParaEditar.valorExtraFT !== undefined ? colaboradorParaEditar.valorExtraFT : 160.0,
         valorBonus: colaboradorParaEditar.valorBonus || 0,
         email: colaboradorParaEditar.email || '',
-        senha: colaboradorParaEditar.senha || 'Turno@2026',
         role: colaboradorParaEditar.role || 'funcionario',
       });
       setStatus(colaboradorParaEditar.status || 'no_posto');
@@ -710,39 +708,12 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
                       />
                     </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="text-slate-300 font-semibold text-xs">
-                          Senha de Acesso
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const num = Math.floor(1000 + Math.random() * 9000);
-                              setFormData({ ...formData, senha: `Turno@${num}` });
-                            }}
-                            className="text-[10px] text-blue-400 hover:underline cursor-pointer"
-                          >
-                            Gerar aleatória
-                          </button>
-                          <span className="text-slate-600">·</span>
-                          <button
-                            type="button"
-                            onClick={() => setFormData({ ...formData, senha: 'Turno@2026' })}
-                            className="text-[10px] text-amber-400 hover:underline cursor-pointer"
-                          >
-                            Padrão
-                          </button>
-                        </div>
+                    <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-500/30 flex items-start gap-2.5">
+                      <ShieldCheck className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                      <div className="text-[11px] text-slate-300">
+                        <strong className="text-white block">Acesso Seguro (Supabase Auth):</strong>
+                        O acesso ao painel é gerenciado de forma criptografada pelo Supabase Auth. Nenhuma senha é armazenada em texto simples no banco de dados.
                       </div>
-                      <input
-                        type="text"
-                        value={formData.senha || 'Turno@2026'}
-                        onChange={(e) => setFormData({ ...formData, senha: e.target.value })}
-                        placeholder="Turno@2026"
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 text-xs font-mono font-bold text-emerald-300"
-                      />
                     </div>
                   </div>
                 </div>
