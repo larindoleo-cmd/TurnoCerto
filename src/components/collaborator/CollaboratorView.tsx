@@ -105,7 +105,7 @@ export const CollaboratorView: React.FC = () => {
   const [notificacoes, setNotificacoes] = useState<NotificacaoColaborador[]>(() => {
     if (!linkedColaborador) return [];
     const initialForColab = INITIAL_NOTIFICACOES_COLABORADOR.filter(
-      (n) => n.colaboradorId === linkedColaborador.id || n.colaboradorId === 'colab-carlos-1042'
+      (n) => n.colaboradorId === linkedColaborador.id
     );
     return initialForColab;
   });
@@ -266,7 +266,7 @@ export const CollaboratorView: React.FC = () => {
 
   // Documentos pessoais
   const meusDocumentos: ColaboradorDocumento[] = INITIAL_COLABORADOR_DOCUMENTOS.filter(
-    (d) => d.colaboradorId === linkedColaborador.id || d.colaboradorId === 'colab-carlos-1042'
+    (d) => d.colaboradorId === linkedColaborador.id
   );
 
   const unreadNotifs = notificacoes.filter((n) => !n.lida).length;
