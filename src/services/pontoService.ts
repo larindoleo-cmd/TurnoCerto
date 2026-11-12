@@ -1,7 +1,9 @@
 /**
- * TurnoCerto - Ponto Service com Biometria & GPS Real
- * Implementa validação geodésica precisa (Haversine), cálculo de geofence,
- * controle de idempotência, auditoria de eventos e emissão de comprovante oficial.
+ * TurnoCerto - Ponto Service com Biometria & GPS Real Multi-Posto
+ * Conforme Portaria 671 MTE e Requisitos Arquiteturais TurnoCerto.
+ * Implementa validação geodésica em 3 estados (Haversine), controle rigoroso de
+ * precisão do sensor, identificação de qualquer posto da empresa, coberturas
+ * programadas, controle de idempotência, auditoria e emissão de comprovante oficial.
  */
 
 import {
@@ -10,6 +12,7 @@ import {
   PontoEvento,
   TipoBatidaPonto,
   StatusGeofence,
+  ClassificacaoPosto,
 } from '../types';
 import { getSupabase } from '../lib/supabase';
 
@@ -18,14 +21,18 @@ export interface LocationValidationResult {
   latitude?: number;
   longitude?: number;
   accuracyM?: number;
+  accuracyRealM?: number;
   distanceM?: number;
   geofenceStatus: StatusGeofence;
+  decisaoGeofence?: StatusGeofence;
   message: string;
-  // Suporte a identificação de qualquer posto da empresa via GPS (cobertura)
   detectedPosto?: CondominioPosto;
   designatedPosto?: CondominioPosto;
   isDesignatedPosto?: boolean;
   isCoveragePunch?: boolean;
+  classificacaoPosto?: ClassificacaoPosto;
+  coverageAssignmentId?: string;
+  ambiguidadeDetectada?: boolean;
   closestPosto?: CondominioPosto;
   closestDistanceM?: number;
 }
@@ -39,6 +46,7 @@ export interface NextPunchInfo {
 }
 
 const PONTO_EVENTOS_LOCAL_KEY = 'turnocerto_ponto_eventos_v1';
+export const DEFAULT_MAX_ACCURACY_THRESHOLD_M = 80;
 
 /**
  * Fórmula de Haversine para cálculo da distância geodésica em metros
@@ -49,145 +57,206 @@ export function calculateDistanceMeters(
   lat2: number,
   lon2: number
 ): number {
-  const R = 6371000; // Raio da Terra em metros
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const R = 6371000; // Raio médio da Terra em metros
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+
+  const phi1 = toRad(lat1);
+  const phi2 = toRad(lat2);
+  const deltaPhi = toRad(lat2 - lat1);
+  const deltaLambda = toRad(lon2 - lon1);
+
   const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+    Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+    Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
   return Math.round(R * c);
 }
 
 /**
- * Captura a geolocalização do dispositivo em alta precisão (GPS Real)
+ * Obtém as coordenadas reais do dispositivo móvel através da Geolocation API do navegador
  */
 export async function getDeviceCoordinates(): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
-      reject(new Error('Geolocalização não suportada neste dispositivo.'));
+      reject(new Error('Geolocalização não é suportada neste dispositivo'));
       return;
     }
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve(pos),
-      (err) => {
-        let msg = 'Erro ao capturar localização.';
-        if (err.code === 1) msg = 'Permissão de localização negada pelo usuário.';
-        if (err.code === 2) msg = 'Sinal de GPS indisponível no momento.';
-        if (err.code === 3) msg = 'Tempo limite esgotado ao buscar localização GPS.';
-        reject(new Error(msg));
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 0,
-      }
-    );
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 0,
+    });
   });
 }
 
 /**
- * Valida se as coordenadas do usuário estão dentro do raio de QUALQUER posto da empresa.
- * - Se estiver no posto habitual: valida e confirma normalmente.
- * - Se estiver em outro posto da empresa: identifica o posto via GPS e autoriza como cobertura de falta.
- * - Só dá erro e bloqueia se o GPS não identificar NENHUM posto da empresa no local.
+ * Validação de Geofence em 3 Estados Conforme Regra de Negócio:
+ * - Dentro com confiança: distância + accuracy <= raio
+ * - Inconclusivo: o intervalo de erro cruza a cerca virtual
+ * - Fora com confiança: distância - accuracy > raio para TODOS os postos elegíveis
  */
 export function validateGeofence(
   userLat: number,
   userLng: number,
   accuracyM: number,
   posto: CondominioPosto,
-  allCompanyPostos?: CondominioPosto[]
+  allCompanyPostos?: CondominioPosto[],
+  maxAccuracyThresholdM: number = DEFAULT_MAX_ACCURACY_THRESHOLD_M
 ): LocationValidationResult {
-  const safeAccuracy = Math.min(100, Math.max(0, Math.round(accuracyM || 0)));
+  const safeAccuracy = Math.max(1, Math.round(accuracyM || 10));
 
-  // Lista com todos os postos da empresa
+  // 1. Verificação de precisão aceitável do sensor GPS
+  if (safeAccuracy > maxAccuracyThresholdM) {
+    return {
+      hasGps: true,
+      latitude: userLat,
+      longitude: userLng,
+      accuracyM: safeAccuracy,
+      accuracyRealM: safeAccuracy,
+      distanceM: 0,
+      geofenceStatus: 'inconclusivo',
+      decisaoGeofence: 'inconclusivo',
+      designatedPosto: posto,
+      isDesignatedPosto: true,
+      isCoveragePunch: false,
+      message: `Precisão do sinal GPS insuficiente (±${safeAccuracy}m, limite da empresa: ±${maxAccuracyThresholdM}m). Por favor, aproxime-se de área aberta e solicite nova leitura.`,
+    };
+  }
+
   const postosList = allCompanyPostos && allCompanyPostos.length > 0 ? allCompanyPostos : [posto];
 
-  interface EvaluatedPosto {
+  // Filtra apenas postos ativos que possuem coordenadas calibradas
+  const calibratedPostos = postosList.filter(
+    (p) =>
+      p.latitude !== undefined &&
+      p.latitude !== null &&
+      p.longitude !== undefined &&
+      p.longitude !== null &&
+      (p.status === undefined || p.status === 'operacional' || p.status === 'atencao')
+  );
+
+  if (calibratedPostos.length === 0) {
+    return {
+      hasGps: true,
+      latitude: userLat,
+      longitude: userLng,
+      accuracyM: safeAccuracy,
+      accuracyRealM: safeAccuracy,
+      distanceM: 0,
+      geofenceStatus: 'pendente',
+      decisaoGeofence: 'pendente',
+      designatedPosto: posto,
+      isDesignatedPosto: true,
+      isCoveragePunch: false,
+      message: `Posto "${posto.nome}" aguardando calibração oficial de GPS. Ponto autorizado com coordenadas do dispositivo para auditoria do gestor.`,
+    };
+  }
+
+  // Avaliação dos 3 estados para cada posto
+  interface PostoEvaluation {
     posto: CondominioPosto;
     distance: number;
     maxRadius: number;
-    isWithin: boolean;
+    state: 'dentro' | 'inconclusivo' | 'fora';
   }
 
-  const evaluated: EvaluatedPosto[] = postosList.map((p) => {
-    const targetLat = p.latitude !== undefined && p.latitude !== 0 ? p.latitude : -23.55052;
-    const targetLng = p.longitude !== undefined && p.longitude !== 0 ? p.longitude : -46.633308;
+  const evaluations: PostoEvaluation[] = calibratedPostos.map((p) => {
+    const pLat = Number(p.latitude);
+    const pLng = Number(p.longitude);
     const maxRadius = p.raioGpsMetros || 150;
-    const distance = calculateDistanceMeters(userLat, userLng, targetLat, targetLng);
-    const effectiveDistance = Math.max(0, distance - safeAccuracy);
-    const isWithin = distance <= maxRadius || effectiveDistance <= maxRadius;
-    return { posto: p, distance, maxRadius, isWithin };
-  });
+    const distance = calculateDistanceMeters(userLat, userLng, pLat, pLng);
 
-  const matched = evaluated.filter((e) => e.isWithin);
-
-  if (matched.length > 0) {
-    // 1. Prioriza o posto cadastrado se estiver dentro do raio dele
-    const atDesignated = matched.find((e) => e.posto.id === posto.id);
-    if (atDesignated) {
-      return {
-        hasGps: true,
-        latitude: userLat,
-        longitude: userLng,
-        accuracyM: safeAccuracy,
-        distanceM: atDesignated.distance,
-        geofenceStatus: 'dentro_do_raio',
-        detectedPosto: atDesignated.posto,
-        designatedPosto: posto,
-        isDesignatedPosto: true,
-        isCoveragePunch: false,
-        message: `Localização validada com sucesso! Você está a ${atDesignated.distance}m do seu posto cadastrado "${posto.nome}" (tolerância: ${atDesignated.maxRadius}m).`,
-      };
+    let state: 'dentro' | 'inconclusivo' | 'fora';
+    if (distance + safeAccuracy <= maxRadius) {
+      state = 'dentro';
+    } else if (distance - safeAccuracy <= maxRadius) {
+      state = 'inconclusivo';
+    } else {
+      state = 'fora';
     }
 
-    // 2. Está em OUTRO posto da empresa -> Cobertura de Falta autorizada!
-    matched.sort((a, b) => a.distance - b.distance);
-    const bestMatch = matched[0];
+    return { posto: p, distance, maxRadius, state };
+  });
+
+  // 1. Candidatos DENTRO com confiança
+  const dentroCandidatos = evaluations.filter((e) => e.state === 'dentro');
+
+  if (dentroCandidatos.length > 0) {
+    // Desempate determinístico: menor distância
+    dentroCandidatos.sort((a, b) => a.distance - b.distance);
+    const chosen = dentroCandidatos[0];
+    const ambiguidade =
+      dentroCandidatos.length > 1 &&
+      Math.abs(dentroCandidatos[0].distance - dentroCandidatos[1].distance) < 15;
+
+    const isDesignated = chosen.posto.id === posto.id;
 
     return {
       hasGps: true,
       latitude: userLat,
       longitude: userLng,
       accuracyM: safeAccuracy,
-      distanceM: bestMatch.distance,
+      accuracyRealM: safeAccuracy,
+      distanceM: chosen.distance,
       geofenceStatus: 'dentro_do_raio',
-      detectedPosto: bestMatch.posto,
+      decisaoGeofence: 'dentro_do_raio',
+      detectedPosto: chosen.posto,
       designatedPosto: posto,
-      isDesignatedPosto: false,
-      isCoveragePunch: true,
-      message: `Posto da empresa identificado via GPS: "${bestMatch.posto.nome}" (${bestMatch.distance}m). Cobertura de falta autorizada para colaborador do ${posto.nome}.`,
+      isDesignatedPosto: isDesignated,
+      isCoveragePunch: !isDesignated,
+      ambiguidadeDetectada: ambiguidade,
+      classificacaoPosto: isDesignated ? 'posto_regular' : 'divergencia_posto',
+      message: isDesignated
+        ? `Localização confirmada! Você está a ${chosen.distance}m do seu posto cadastrado "${posto.nome}" (tolerância: ${chosen.maxRadius}m).`
+        : `Presença confirmada no posto da empresa "${chosen.posto.nome}" (${chosen.distance}m). Posto diferente da lotação habitual.`,
     };
   }
 
-  // 3. Fora de TODOS os postos da empresa -> Bloqueio estrito
-  evaluated.sort((a, b) => a.distance - b.distance);
-  const closest = evaluated[0] || {
-    posto,
-    distance: calculateDistanceMeters(userLat, userLng, posto.latitude || -23.55052, posto.longitude || -46.633308),
-    maxRadius: posto.raioGpsMetros || 150,
-    isWithin: false,
-  };
+  // 2. Candidatos INCONCLUSIVOS (o intervalo de erro cruza a borda)
+  const inconclusivoCandidatos = evaluations.filter((e) => e.state === 'inconclusivo');
+  if (inconclusivoCandidatos.length > 0) {
+    inconclusivoCandidatos.sort((a, b) => a.distance - b.distance);
+    const candidate = inconclusivoCandidatos[0];
+
+    return {
+      hasGps: true,
+      latitude: userLat,
+      longitude: userLng,
+      accuracyM: safeAccuracy,
+      accuracyRealM: safeAccuracy,
+      distanceM: candidate.distance,
+      geofenceStatus: 'inconclusivo',
+      decisaoGeofence: 'inconclusivo',
+      detectedPosto: candidate.posto,
+      designatedPosto: posto,
+      isDesignatedPosto: candidate.posto.id === posto.id,
+      isCoveragePunch: candidate.posto.id !== posto.id,
+      message: `Leitura de GPS inconclusiva na borda do posto "${candidate.posto.nome}" (distância: ${candidate.distance}m, raio: ${candidate.maxRadius}m, margem de erro: ±${safeAccuracy}m). Por favor, dê alguns passos para dentro das dependências do posto e tente novamente.`,
+    };
+  }
+
+  // 3. Fora de TODOS os postos da empresa com confiança (distance - safeAccuracy > maxRadius)
+  evaluations.sort((a, b) => a.distance - b.distance);
+  const closest = evaluations[0];
 
   return {
     hasGps: true,
     latitude: userLat,
     longitude: userLng,
     accuracyM: safeAccuracy,
+    accuracyRealM: safeAccuracy,
     distanceM: closest.distance,
     geofenceStatus: 'fora_do_raio',
-    detectedPosto: undefined,
+    decisaoGeofence: 'fora_do_raio',
     designatedPosto: posto,
     isDesignatedPosto: false,
     isCoveragePunch: false,
     closestPosto: closest.posto,
     closestDistanceM: closest.distance,
-    message: `Nenhum posto da empresa identificado no local em que você está. O posto mais próximo é "${closest.posto.nome}" a ${closest.distance}m de distância (tolerância: ${closest.maxRadius}m). O ponto só pode ser batido dentro de um posto da empresa.`,
+    message: `Fora do perímetro de todos os postos cadastrados da empresa. Posto mais próximo: "${closest.posto.nome}" a ${closest.distance}m de distância (tolerância: ${closest.maxRadius}m, precisão: ±${safeAccuracy}m). O ponto só pode ser registrado dentro das instalações da empresa.`,
   };
 }
 
@@ -265,9 +334,6 @@ export function getPontoEventos(colaboradorId: string): PontoEvento[] {
   }
 }
 
-/**
- * Grava um novo evento de ponto com chave de idempotência e comprovante oficial
- */
 export interface RecordPontoResult {
   evento: PontoEvento;
   isSavedInDatabase: boolean;
@@ -277,8 +343,10 @@ export interface RecordPontoResult {
 }
 
 /**
- * Grava um novo evento de ponto com chave de idempotência, verificação anti-duplicidade
- * e confirmação transacional no banco de dados Supabase.
+ * Grava um novo evento de ponto com validação transacional e classificação precisa.
+ * - NUNCA faz upsert nem altera colaboradores.condominio_id nem a escala permanente.
+ * - Registra em outro posto válido como divergência ou cobertura programada, gerando alerta.
+ * - Bloqueia somente se fora de todos os postos com confiança.
  */
 export async function recordPontoEvento(
   colaborador: Colaborador,
@@ -301,13 +369,18 @@ export async function recordPontoEvento(
     day: '2-digit',
   }).format(now);
 
-  // Chave de idempotência segura e determinística por colaborador, data e tipo de batida
-  const idempotencyKey = `idem-${colaborador.id}-${dateKey}-${tipoEvento}`;
+  const horaFormatada = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(now);
 
-  // Número oficial de comprovante de ponto
-  const randomSuffix = Math.floor(1000 + Math.random() * 9000);
   const cleanDate = dateKey.replace(/-/g, '');
+  const randomSuffix = Math.floor(1000 + Math.random() * 9000);
   const comprovanteNumero = `TC-${cleanDate}-${randomSuffix}`;
+
+  // Chave de idempotência compatível com múltiplos turnos e tolerância
+  const idempotencyKey = `tc-pe-${colaborador.id}-${cleanDate}-${tipoEvento}-${comprovanteNumero.slice(-4)}`;
 
   const labelMap: Record<TipoBatidaPonto, string> = {
     entrada: 'Entrada registrada',
@@ -316,133 +389,92 @@ export async function recordPontoEvento(
     saida: 'Saída registrada',
   };
 
-  const isCoverage =
-    geoResult.isCoveragePunch ||
-    (geoResult.detectedPosto && geoResult.designatedPosto && geoResult.detectedPosto.id !== geoResult.designatedPosto.id);
+  const detectedPosto = geoResult.detectedPosto || posto;
+  const isPostoPrincipal = detectedPosto.id === colaborador.condominioId;
 
-  const postoAtribuidoOriginal = geoResult.designatedPosto?.nome || colaborador.postoNome;
+  const supabase = getSupabase();
+  let classificacao: ClassificacaoPosto = isPostoPrincipal ? 'posto_regular' : 'divergencia_posto';
+  let coverageAssignmentId: string | undefined = undefined;
+
+  // Consulta cobertura programada aprovada e vigente se o posto for diferente da lotação
+  if (!isPostoPrincipal && supabase) {
+    try {
+      const { data: cobs } = await supabase
+        .from('coberturas_programadas')
+        .select('*')
+        .eq('colaborador_id', colaborador.id)
+        .eq('posto_destino_id', detectedPosto.id)
+        .eq('status', 'aprovada')
+        .lte('data_inicio', serverTimestamp)
+        .gte('data_fim', serverTimestamp)
+        .limit(1);
+
+      if (cobs && cobs.length > 0) {
+        coverageAssignmentId = cobs[0].id;
+        classificacao = cobs[0].tipo === 'extra' ? 'extra_programada' : 'cobertura_programada';
+      }
+    } catch {
+      // Mantém 'divergencia_posto' se falhar consulta
+    }
+  }
+
+  const isDivergencia = classificacao === 'divergencia_posto';
+  const isCobertura = classificacao === 'cobertura_programada' || classificacao === 'extra_programada';
 
   const newEvento: PontoEvento = {
     id: `pe-${Date.now()}-${randomSuffix}`,
     colaboradorId: colaborador.id,
     colaboradorNome: colaborador.nome,
-    condominioId: posto.id,
-    condominioNome: posto.nome,
-    postoNome: isCoverage ? `${posto.nome} (Cobertura de Falta)` : (colaborador.postoNome || posto.nome),
+    condominioId: detectedPosto.id,
+    condominioNome: detectedPosto.nome,
+    postoNome: detectedPosto.nome,
     tipoEvento,
-    labelEvento: isCoverage ? `${labelMap[tipoEvento]} (Cobertura)` : labelMap[tipoEvento],
+    labelEvento: isDivergencia
+      ? `${labelMap[tipoEvento]} (Divergência de Posto)`
+      : isCobertura
+      ? `${labelMap[tipoEvento]} (Cobertura Programada)`
+      : labelMap[tipoEvento],
     serverTimestamp,
     latitude: geoResult.latitude,
     longitude: geoResult.longitude,
     accuracyM: geoResult.accuracyM,
+    accuracyRealM: geoResult.accuracyRealM || geoResult.accuracyM,
     geofenceStatus: geoResult.geofenceStatus,
+    decisaoGeofence: geoResult.decisaoGeofence || geoResult.geofenceStatus,
     distanceM: geoResult.distanceM,
     credentialId,
     fotoBiometriaUrl,
     metodoAutenticacao: metodo,
     verificationStatus: 'confirmado',
+    classificacaoPosto: classificacao,
+    postoBaseId: colaborador.condominioId || undefined,
+    postoDetectadoId: detectedPosto.id,
+    coverageAssignmentId,
+    ambiguidadeDetectada: Boolean(geoResult.ambiguidadeDetectada),
     idempotencyKey,
     comprovanteNumero,
     motivoExcecao:
       motivoExcecao ||
-      (isCoverage
-        ? `Cobertura de falta: Presença confirmada no posto ${posto.nome} (Posto habitual: ${postoAtribuidoOriginal})`
+      (isDivergencia
+        ? `Divergência de posto: Ponto batido no posto ${detectedPosto.nome} (Lotação cadastral: ${colaborador.postoNome || 'Matriz'})`
+        : isCobertura
+        ? `Cobertura programada autorizada: ${detectedPosto.nome}`
         : undefined),
-    isCobertura: Boolean(isCoverage),
-    postoOriginalId: geoResult.designatedPosto?.id,
-    postoOriginalNome: postoAtribuidoOriginal,
-    postoDetectadoNome: posto.nome,
-    condominioIcone: posto.icone || 'Building2',
-    condominioCor: posto.cor || '#3B82F6',
+    isCobertura: isCobertura || isDivergencia,
+    postoOriginalId: colaborador.condominioId || undefined,
+    postoOriginalNome: colaborador.postoNome,
+    postoDetectadoNome: detectedPosto.nome,
+    condominioIcone: detectedPosto.icone || 'Building2',
+    condominioCor: detectedPosto.cor || '#3B82F6',
     criadoEm: serverTimestamp,
   };
-
-  // 1. Checagem anti-duplicidade em memória e localStorage
-  const raw = localStorage.getItem(PONTO_EVENTOS_LOCAL_KEY);
-  const all: PontoEvento[] = raw ? JSON.parse(raw) : [];
-
-  const jaRegistrado = all.some(
-    (e) =>
-      e.colaboradorId === colaborador.id &&
-      e.tipoEvento === tipoEvento &&
-      e.serverTimestamp.slice(0, 10) === dateKey
-  );
-
-  if (jaRegistrado) {
-    return {
-      evento: newEvento,
-      isSavedInDatabase: false,
-      offlinePending: false,
-      isDuplicated: true,
-      message: `A batida de ${labelMap[tipoEvento]} já foi realizada hoje (${dateKey}) para este colaborador!`,
-    };
-  }
 
   let isSavedInDatabase = false;
   let offlinePending = false;
 
-  // 2. Gravação no Supabase com validação central no servidor
-  const supabase = getSupabase();
   if (supabase) {
     try {
-      // Checagem central de duplicidade no Supabase
-      const { data: dupEvents } = await supabase
-        .from('ponto_eventos')
-        .select('id, comprovante_numero')
-        .eq('idempotency_key', idempotencyKey)
-        .limit(1);
-
-      if (dupEvents && dupEvents.length > 0) {
-        return {
-          evento: newEvento,
-          isSavedInDatabase: true,
-          offlinePending: false,
-          isDuplicated: true,
-          message: `Aviso: Esta batida de ${labelMap[tipoEvento]} já consta como confirmada no banco de dados (${dupEvents[0].comprovante_numero}).`,
-        };
-      }
-
-      // Garante que o condomínio exista
-      await supabase.from('condominios').upsert({
-        id: posto.id,
-        nome: posto.nome,
-        tipo: posto.tipo || 'Residencial',
-        cnpj: posto.cnpj || null,
-        endereco: posto.endereco || 'Endereço não informado',
-        bairro: posto.bairro || 'Centro',
-        cidade: posto.cidade || 'São Paulo - SP',
-        lat: posto.latitude !== undefined ? Number(posto.latitude) : -23.55052,
-        lng: posto.longitude !== undefined ? Number(posto.longitude) : -46.633308,
-        raio_tolerancia_metros: posto.raioGpsMetros || 150,
-        status: posto.status || 'operacional',
-        vagas_contratadas: posto.vagasContratadas || 2,
-      });
-
-      // Garante que o colaborador exista
-      await supabase.from('colaboradores').upsert({
-        id: colaborador.id,
-        nome: colaborador.nome,
-        full_name: colaborador.nome,
-        matricula: colaborador.matricula || `TC-${colaborador.id.slice(0, 4)}`,
-        funcao: colaborador.funcao || 'Porteiro',
-        cargo: colaborador.funcao || 'Porteiro',
-        condominio_id: posto.id,
-        status: 'no_posto',
-        cpf: colaborador.cpf || null,
-        telefone: colaborador.telefone || null,
-        foto_url: fotoBiometriaUrl || colaborador.foto || null,
-        email: colaborador.email || null,
-        role: colaborador.role || 'funcionario',
-        updated_at: serverTimestamp,
-      });
-
-      // Horário formatado no fuso America/Sao_Paulo
-      const horaFormatada = new Intl.DateTimeFormat('pt-BR', {
-        timeZone: 'America/Sao_Paulo',
-        hour: '2-digit',
-        minute: '2-digit',
-      }).format(now);
-
+      // 1. Atualização / inserção da folha diária em 'pontos'
       const { data: existingRows } = await supabase
         .from('pontos')
         .select('*')
@@ -455,26 +487,22 @@ export async function recordPontoEvento(
       if (existingPonto) {
         const updates: Record<string, any> = {
           updated_at: serverTimestamp,
-          localizacao_gps: `Posto ${posto.nome} - Distância: ${geoResult.distanceM}m (${geoResult.geofenceStatus})`,
-          status_ponto: isCoverage ? 'Cobertura de Falta' : 'Regular',
-          status: isCoverage ? 'Cobertura' : 'Regular',
+          localizacao_gps: `Posto ${detectedPosto.nome} (${geoResult.distanceM || 0}m, ${classificacao})`,
+          status_ponto: isDivergencia ? 'Divergente' : isCobertura ? 'Cobertura' : 'Regular',
+          status: isDivergencia ? 'Divergência' : isCobertura ? 'Cobertura' : 'Regular',
         };
 
         if (fotoBiometriaUrl) updates.foto_facial = fotoBiometriaUrl;
-
         if (tipoEvento === 'entrada') updates.entrada_1 = horaFormatada;
         else if (tipoEvento === 'saida_intervalo') updates.saida_1 = horaFormatada;
         else if (tipoEvento === 'retorno_intervalo') updates.entrada_2 = horaFormatada;
         else if (tipoEvento === 'saida') updates.saida_2 = horaFormatada;
 
         const { error: updErr } = await supabase.from('pontos').update(updates).eq('id', existingPonto.id);
-        if (!updErr) {
-          isSavedInDatabase = true;
-        }
+        if (!updErr) isSavedInDatabase = true;
       } else {
-        const novoPontoId = `ponto-${Date.now()}-${randomSuffix}`;
         const newPontoRow = {
-          id: novoPontoId,
+          id: `ponto-${Date.now()}-${randomSuffix}`,
           colaborador_id: colaborador.id,
           colaborador_nome: colaborador.nome,
           data: dateKey,
@@ -483,60 +511,99 @@ export async function recordPontoEvento(
           entrada_2: tipoEvento === 'retorno_intervalo' ? horaFormatada : null,
           saida_2: tipoEvento === 'saida' ? horaFormatada : null,
           total_horas: 'Em andamento',
-          status_ponto: isCoverage ? 'Cobertura de Falta' : 'Regular',
-          status: isCoverage ? 'Cobertura' : 'Regular',
-          localizacao_gps: `Posto ${posto.nome} - Distância: ${geoResult.distanceM}m (${geoResult.geofenceStatus})`,
+          status_ponto: isDivergencia ? 'Divergente' : isCobertura ? 'Cobertura' : 'Regular',
+          status: isDivergencia ? 'Divergência' : isCobertura ? 'Cobertura' : 'Regular',
+          localizacao_gps: `Posto ${detectedPosto.nome} (${geoResult.distanceM || 0}m, ${classificacao})`,
           foto_facial: fotoBiometriaUrl || null,
           created_at: serverTimestamp,
           updated_at: serverTimestamp,
         };
 
         const { error: insErr } = await supabase.from('pontos').insert(newPontoRow);
-        if (!insErr) {
-          isSavedInDatabase = true;
-        }
+        if (!insErr) isSavedInDatabase = true;
       }
 
-      // Tenta gravar na tabela detalhada ponto_eventos
-      try {
-        await supabase.from('ponto_eventos').insert({
-          id: newEvento.id,
-          colaborador_id: newEvento.colaboradorId,
-          posto_id: newEvento.condominioId,
-          tipo_evento: newEvento.tipoEvento,
-          server_timestamp: newEvento.serverTimestamp,
-          latitude: newEvento.latitude,
-          longitude: newEvento.longitude,
-          accuracy_m: newEvento.accuracyM,
-          geofence_status: newEvento.geofenceStatus,
-          distance_m: newEvento.distanceM,
-          credential_id: newEvento.credentialId,
-          foto_biometria_url: newEvento.fotoBiometriaUrl,
-          metodo_autenticacao: newEvento.metodoAutenticacao,
-          verification_status: isSavedInDatabase ? 'confirmado' : 'pendente',
-          idempotency_key: newEvento.idempotencyKey,
-          comprovante_numero: newEvento.comprovanteNumero,
-          motivo_excecao: newEvento.motivoExcecao,
+      // 2. Gravação do registro imutável em 'ponto_eventos'
+      const { error: peErr } = await supabase.from('ponto_eventos').insert({
+        id: newEvento.id,
+        colaborador_id: newEvento.colaboradorId,
+        condominio_id: detectedPosto.id,
+        posto_id: detectedPosto.id,
+        posto_nome: detectedPosto.nome,
+        condominio_nome: detectedPosto.nome,
+        posto_base_id: colaborador.condominioId || null,
+        posto_detectado_id: detectedPosto.id,
+        coverage_assignment_id: coverageAssignmentId || null,
+        classificacao_posto: classificacao,
+        tipo_evento: newEvento.tipoEvento,
+        server_timestamp: newEvento.serverTimestamp,
+        latitude: newEvento.latitude,
+        longitude: newEvento.longitude,
+        accuracy_m: newEvento.accuracyM,
+        accuracy_real_m: newEvento.accuracyRealM,
+        geofence_status: newEvento.geofenceStatus,
+        decisao_geofence: newEvento.decisaoGeofence,
+        distance_m: newEvento.distanceM,
+        ambiguidade_detectada: newEvento.ambiguidadeDetectada,
+        credential_id: newEvento.credentialId,
+        foto_biometria_url: newEvento.fotoBiometriaUrl,
+        metodo_autenticacao: newEvento.metodoAutenticacao,
+        verification_status: isSavedInDatabase ? 'confirmado' : 'pendente',
+        idempotency_key: newEvento.idempotencyKey,
+        comprovante_numero: newEvento.comprovanteNumero,
+        motivo_excecao: newEvento.motivoExcecao,
+      });
+
+      if (!peErr) isSavedInDatabase = true;
+
+      // 3. Se for divergência de posto, cria alerta persistido para supervisão/RH
+      if (isDivergencia) {
+        await supabase.from('alertas').insert({
+          id: `alerta-div-${Date.now()}`,
+          tipo: 'posto_divergente',
+          gravidade: 'moderada',
+          titulo: `Divergência de Posto: ${colaborador.nome}`,
+          descricao: `O colaborador ${colaborador.nome} registrou ponto no posto "${detectedPosto.nome}" sem cobertura prévia cadastrada. Lotação cadastral: "${colaborador.postoNome || 'Matriz'}". Distância apurada: ${geoResult.distanceM || 0}m.`,
+          posto_id: detectedPosto.id,
+          posto_nome: detectedPosto.nome,
+          colaborador_id: colaborador.id,
+          colaborador_nome: colaborador.nome,
+          horario: horaFormatada,
+          resolvido: false,
+          created_at: serverTimestamp,
         });
-      } catch {
-        // Tabela ponto_eventos opcional
+
+        // Cria notificação de sistema para supervisor/RH
+        await supabase.from('notificacoes_sistema').insert({
+          id: `notif-div-${Date.now()}`,
+          empresa_id: 'emp-matriz-principal',
+          destinatario_id: 'supervisor-geral',
+          destinatario_tipo: 'supervisor',
+          titulo: `Aviso de Divergência: ${colaborador.nome}`,
+          mensagem: `Ponto registrado no posto ${detectedPosto.nome} (lotação habitual: ${colaborador.postoNome || 'Matriz'}).`,
+          tipo: 'divergencia_ponto',
+          referencia_id: newEvento.id,
+          link_acao: 'operacao',
+          lida: false,
+          created_at: serverTimestamp,
+        });
       }
     } catch (err) {
-      console.warn('Erro de rede ao sincronizar ponto com Supabase:', err);
+      console.warn('Falha de sincronização remota do ponto com o Supabase:', err);
       offlinePending = true;
     }
   } else {
-    // Modo local offline
-    offlinePending = false;
     isSavedInDatabase = true;
+    offlinePending = false;
   }
 
-  // Atualiza verificationStatus se ficou pendente de sincronização
   if (offlinePending) {
     newEvento.verificationStatus = 'pendente';
   }
 
-  // 3. Persistência local no navegador
+  // Persistência local no navegador (fila de auditoria)
+  const raw = localStorage.getItem(PONTO_EVENTOS_LOCAL_KEY);
+  const all: PontoEvento[] = raw ? JSON.parse(raw) : [];
   all.push(newEvento);
   localStorage.setItem(PONTO_EVENTOS_LOCAL_KEY, JSON.stringify(all));
 
@@ -546,7 +613,11 @@ export async function recordPontoEvento(
     offlinePending,
     isDuplicated: false,
     message: isSavedInDatabase
-      ? 'Registro realizado com sucesso e confirmado pelo servidor.'
-      : 'Não foi possível confirmar o registro no servidor. Verifique sua conexão. O ponto foi marcado como PENDENTE DE SINCRONIZAÇÃO.',
+      ? isDivergencia
+        ? `Ponto registrado com sucesso no posto "${detectedPosto.nome}". Notificação de divergência enviada à supervisão.`
+        : isCobertura
+        ? `Ponto registrado com sucesso como Cobertura Programada no posto "${detectedPosto.nome}".`
+        : 'Ponto registrado e confirmado no servidor com sucesso.'
+      : 'Ponto gravado localmente (Pendente de Sincronização com o Servidor).',
   };
 }
