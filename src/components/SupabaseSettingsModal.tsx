@@ -125,7 +125,6 @@ CREATE TABLE IF NOT EXISTS public.colaboradores (
   valor_extra_ft NUMERIC(10, 2) NOT NULL DEFAULT 160.00,
   valor_bonus NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
   email TEXT,
-  senha TEXT,
   role TEXT DEFAULT 'funcionario',
   primeiro_acesso_concluido BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -267,34 +266,23 @@ ALTER TABLE public.pontos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.atestados ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.empresa_info ENABLE ROW LEVEL SECURITY;
 
-GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+-- 10. ROW LEVEL SECURITY (RLS) & ISOLAMENTO ZERO-TRUST
+-- Execute a migração oficial: supabase/migrations/20261112100000_security_hardening_auth_rls.sql
+ALTER TABLE public.condominios ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.colaboradores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ocorrencias ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.alertas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.holerites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.pontos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.atestados ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.empresa_info ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "condominios_all" ON public.condominios;
-CREATE POLICY "condominios_all" ON public.condominios FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "colaboradores_all" ON public.colaboradores;
-CREATE POLICY "colaboradores_all" ON public.colaboradores FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "profiles_all" ON public.profiles;
-CREATE POLICY "profiles_all" ON public.profiles FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "ocorrencias_all" ON public.ocorrencias;
-CREATE POLICY "ocorrencias_all" ON public.ocorrencias FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "alertas_all" ON public.alertas;
-CREATE POLICY "alertas_all" ON public.alertas FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "holerites_all" ON public.holerites;
-CREATE POLICY "holerites_all" ON public.holerites FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "pontos_all" ON public.pontos;
-CREATE POLICY "pontos_all" ON public.pontos FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "atestados_all" ON public.atestados;
-CREATE POLICY "atestados_all" ON public.atestados FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "empresa_info_all" ON public.empresa_info;
-CREATE POLICY "empresa_info_all" ON public.empresa_info FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);`;
+-- Revoga privilégios excessivos do papel anônimo
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM anon;
+GRANT USAGE ON SCHEMA public TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;`;
 
   const copySql = () => {
     navigator.clipboard.writeText(sqlSchemaSnippet);
