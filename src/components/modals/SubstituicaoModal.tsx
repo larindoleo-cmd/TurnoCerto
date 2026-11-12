@@ -1,20 +1,29 @@
 import React, { useState } from 'react';
-import { X, RefreshCw, AlertTriangle, ShieldCheck, Clock, UserCheck, CheckCircle2 } from 'lucide-react';
+import { X, RefreshCw, CheckCircle2, Calendar, Clock } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { CondominioPosto, Colaborador } from '../../types';
 
 interface SubstituicaoModalProps {
   posto?: CondominioPosto;
   colaboradorFalta?: Colaborador;
+  alertaId?: string;
   onClose: () => void;
 }
 
 export const SubstituicaoModal: React.FC<SubstituicaoModalProps> = ({
   posto,
   colaboradorFalta,
+  alertaId,
   onClose,
 }) => {
   const { condominios, colaboradores, substituirColaborador } = useApp();
+
+  const todayBR = new Intl.DateTimeFormat('fr-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
 
   const [selectedPostoId, setSelectedPostoId] = useState<string>(
     posto ? posto.id : condominios[0]?.id || ''
@@ -22,23 +31,44 @@ export const SubstituicaoModal: React.FC<SubstituicaoModalProps> = ({
 
   const targetPosto = condominios.find((c) => c.id === selectedPostoId) || posto || condominios[0];
 
-  // Candidates for substitution:
-  // 1. Volantes da Reserva (funcao === 'Volante de Cobertura' or condominioId === null)
-  // 2. Colaboradores de folga no mesmo perfil
   const candidatos = colaboradores.filter(
     (c) =>
-      c.status === 'folga' ||
-      c.funcao === 'Volante de Cobertura' ||
-      c.condominioId === null
+      c.id !== colaboradorFalta?.id &&
+      (c.status === 'folga' ||
+        c.funcao === 'Volante de Cobertura' ||
+        c.condominioId === null ||
+        c.condominioId !== targetPosto?.id)
   );
 
   const [selectedSubstitutoId, setSelectedSubstitutoId] = useState<string>(
     candidatos[0]?.id || ''
   );
+  const [dataInicio, setDataInicio] = useState(todayBR);
+  const [dataFim, setDataFim] = useState(todayBR);
+  const [horaInicio, setHoraInicio] = useState(colaboradorFalta?.turnoInicio || '07:00');
+  const [horaFim, setHoraFim] = useState(colaboradorFalta?.turnoFim || '19:00');
+  const [motivo, setMotivo] = useState(
+    colaboradorFalta
+      ? `Substituição emergencial por ausência de ${colaboradorFalta.nome}`
+      : 'Cobertura emergencial de rendição de turno'
+  );
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleConfirm = () => {
-    if (!targetPosto || !selectedSubstitutoId) return;
-    substituirColaborador(targetPosto.id, selectedSubstitutoId, colaboradorFalta?.id);
+  const handleConfirm = async () => {
+    if (!targetPosto || !selectedSubstitutoId || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      await substituirColaborador(targetPosto.id, selectedSubstitutoId, colaboradorFalta?.id, {
+        dataInicio,
+        dataFim: dataFim < dataInicio ? dataInicio : dataFim,
+        horaInicio,
+        horaFim,
+        motivo: motivo.trim() || undefined,
+        alertaId,
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const selectedCandidate = colaboradores.find((c) => c.id === selectedSubstitutoId);
@@ -50,28 +80,25 @@ export const SubstituicaoModal: React.FC<SubstituicaoModalProps> = ({
       aria-modal="true"
     >
       <div className="w-full sm:max-w-lg max-h-[92vh] flex flex-col rounded-t-3xl sm:rounded-2xl bg-[#0B132B] border border-amber-500/30 shadow-2xl overflow-hidden animate-in slide-in-from-bottom duration-250">
-        {/* Header */}
         <div className="px-5 py-4 border-b border-slate-800 bg-slate-900/60 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400">
               <RefreshCw className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white">Substituição Operacional Rápida</h2>
-              <p className="text-[11px] text-slate-400">Despacho de Volante ou Cobertura de Posto</p>
+              <h2 className="text-sm font-bold text-white">Substituição Operacional Temporária</h2>
+              <p className="text-[11px] text-slate-400">Cobertura emergencial preservando lotação base</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center"
+            className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Form Body */}
         <div className="p-5 overflow-y-auto space-y-4 no-scrollbar text-sm">
-          {/* Target Posto Selection */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
               Posto de Destino
@@ -89,7 +116,6 @@ export const SubstituicaoModal: React.FC<SubstituicaoModalProps> = ({
             </select>
           </div>
 
-          {/* Missing / Vacant reason callout */}
           <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs space-y-1">
             <span className="text-[10px] uppercase font-bold text-slate-400">Situação do Posto</span>
             <p className="text-slate-200 font-medium">
@@ -99,16 +125,76 @@ export const SubstituicaoModal: React.FC<SubstituicaoModalProps> = ({
             </p>
           </div>
 
-          {/* Available Substitute Workers */}
+          {/* Período e Horário da Substituição Temporária */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <div>
+              <label className="text-[10px] text-slate-400 font-semibold mb-1 flex items-center gap-1">
+                <Calendar className="w-3 h-3 text-blue-400" /> Início
+              </label>
+              <input
+                type="date"
+                value={dataInicio}
+                onChange={(e) => setDataInicio(e.target.value)}
+                className="w-full px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-[11px]"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 font-semibold mb-1 flex items-center gap-1">
+                <Calendar className="w-3 h-3 text-blue-400" /> Fim
+              </label>
+              <input
+                type="date"
+                value={dataFim}
+                min={dataInicio}
+                onChange={(e) => setDataFim(e.target.value)}
+                className="w-full px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-[11px]"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 font-semibold mb-1 flex items-center gap-1">
+                <Clock className="w-3 h-3 text-amber-400" /> Entrada
+              </label>
+              <input
+                type="time"
+                value={horaInicio}
+                onChange={(e) => setHoraInicio(e.target.value)}
+                className="w-full px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-[11px]"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 font-semibold mb-1 flex items-center gap-1">
+                <Clock className="w-3 h-3 text-amber-400" /> Saída
+              </label>
+              <input
+                type="time"
+                value={horaFim}
+                onChange={(e) => setHoraFim(e.target.value)}
+                className="w-full px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-[11px]"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+              Motivo / Observação da Substituição
+            </label>
+            <input
+              type="text"
+              value={motivo}
+              onChange={(e) => setMotivo(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs"
+            />
+          </div>
+
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                Volantes & Colaboradores Disponíveis ({candidatos.length})
+                Volantes & Colaboradores Elegíveis ({candidatos.length})
               </label>
-              <span className="text-[10px] text-emerald-400 font-medium">Prontos para acionamento</span>
+              <span className="text-[10px] text-emerald-400 font-medium">Lotação base mantida</span>
             </div>
 
-            <div className="space-y-2 max-h-60 overflow-y-auto no-scrollbar">
+            <div className="space-y-2 max-h-52 overflow-y-auto no-scrollbar">
               {candidatos.map((cand) => {
                 const isSelected = selectedSubstitutoId === cand.id;
                 const isVolante = cand.funcao === 'Volante de Cobertura';
@@ -124,11 +210,17 @@ export const SubstituicaoModal: React.FC<SubstituicaoModalProps> = ({
                     }`}
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <img
-                        src={cand.foto}
-                        alt={cand.nome}
-                        className="w-9 h-9 rounded-full object-cover border border-slate-700 shrink-0"
-                      />
+                      {cand.foto ? (
+                        <img
+                          src={cand.foto}
+                          alt={cand.nome}
+                          className="w-9 h-9 rounded-full object-cover border border-slate-700 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-9 h-9 rounded-full bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center shrink-0">
+                          {cand.nome.slice(0, 2).toUpperCase()}
+                        </div>
+                      )}
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
                           <p className="text-xs font-bold text-white truncate">{cand.nome}</p>
@@ -142,7 +234,7 @@ export const SubstituicaoModal: React.FC<SubstituicaoModalProps> = ({
                           {cand.funcao} · Matrícula: {cand.matricula}
                         </p>
                         <p className="text-[10px] text-slate-400">
-                          {cand.postoNome} · Banco: {cand.bancoHoras > 0 ? `+${cand.bancoHoras}h` : `${cand.bancoHoras}h`}
+                          Lotação Base: {cand.postoNome} · Banco: {cand.bancoHoras > 0 ? `+${cand.bancoHoras}h` : `${cand.bancoHoras}h`}
                         </p>
                       </div>
                     </div>
@@ -160,29 +252,29 @@ export const SubstituicaoModal: React.FC<SubstituicaoModalProps> = ({
             </div>
           </div>
 
-          {/* Action note */}
-          {selectedCandidate && (
+          {selectedCandidate && targetPosto && (
             <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-800/40 text-[11px] text-blue-200">
-              <span className="font-semibold block mb-0.5">Impacto Operacional Imediato:</span>
-              Ao confirmar, {selectedCandidate.nome} será alocado no {targetPosto.nome}, o alerta crítico será resolvido no painel e o status da unidade passará para <strong>Operacional (100% de cobertura)</strong>.
+              <span className="font-semibold block mb-0.5">Regra de Lotação & Auditoria:</span>
+              Será criada uma <strong>cobertura temporária</strong> para <strong>{selectedCandidate.nome}</strong> em{' '}
+              <strong>{targetPosto.nome}</strong> ({dataInicio} a {dataFim}). A lotação base (
+              <strong>{selectedCandidate.postoNome}</strong>) e a escala habitual do substituto não serão alteradas, e apenas o alerta alvo será resolvido.
             </div>
           )}
         </div>
 
-        {/* Footer */}
         <div className="p-4 bg-slate-900/80 border-t border-slate-800 shrink-0 flex items-center justify-end gap-2.5">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-800 rounded-xl"
+            className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-800 rounded-xl cursor-pointer"
           >
             Cancelar
           </button>
           <button
             onClick={handleConfirm}
-            disabled={!selectedCandidate}
-            className="px-5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-amber-400 to-amber-300 hover:from-amber-300 hover:to-amber-200 rounded-xl shadow-lg shadow-amber-500/20 active:scale-95 transition-all disabled:opacity-50"
+            disabled={!selectedCandidate || isSubmitting}
+            className="px-5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-amber-400 to-amber-300 hover:from-amber-300 hover:to-amber-200 rounded-xl shadow-lg shadow-amber-500/20 active:scale-95 transition-all disabled:opacity-50 cursor-pointer"
           >
-            Confirmar Cobertura Imediata
+            {isSubmitting ? 'Registrando...' : 'Confirmar Cobertura Temporária'}
           </button>
         </div>
       </div>

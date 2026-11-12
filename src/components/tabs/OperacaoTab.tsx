@@ -20,6 +20,7 @@ import { CondominioSelector } from '../CondominioSelector';
 
 export const OperacaoTab: React.FC = () => {
   const {
+    currentUser,
     condominios,
     colaboradores,
     alertas,
@@ -93,11 +94,22 @@ export const OperacaoTab: React.FC = () => {
         <div className="flex items-center gap-3.5 min-w-0">
           {/* Avatar circular com indicador de status online verde */}
           <div className="relative shrink-0">
-            <img
-              src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80"
-              alt="Supervisora"
-              className="w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover border-2 border-blue-500/40 shadow-md"
-            />
+            {currentUser?.avatarUrl ? (
+              <img
+                src={currentUser.avatarUrl}
+                alt={currentUser.nome}
+                className="w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover border-2 border-blue-500/40 shadow-md"
+              />
+            ) : (
+              <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-gradient-to-br from-blue-600/35 to-indigo-700/45 border-2 border-blue-500/40 shadow-md flex items-center justify-center font-black text-base text-blue-100">
+                {(currentUser?.nome || 'TC')
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map((p) => p[0]?.toUpperCase() || '')
+                  .join('')}
+              </div>
+            )}
             <span
               className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-400 ring-2 ring-[#0B132B] shadow-[0_0_8px_rgba(16,185,129,0.8)]"
               title="Online"
@@ -106,13 +118,15 @@ export const OperacaoTab: React.FC = () => {
 
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-slate-400">Administração</span>
+              <span className="text-xs font-semibold text-slate-400">
+                {currentUser?.cargo || 'Gestão Operacional'}
+              </span>
               <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-600/30 text-blue-300 border border-blue-500/40">
-                Administrador
+                {currentUser?.role || 'Gestor'}
               </span>
             </div>
             <h2 className="text-base sm:text-lg font-bold text-white truncate mt-0.5">
-              Bem-vinda, Supervisora!
+              Olá, {currentUser?.nome || 'Operação'}!
             </h2>
             <p className="text-[11px] text-slate-400 truncate">
               Painel de Supervisão e Controle de Postos

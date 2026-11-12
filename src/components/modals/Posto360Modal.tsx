@@ -30,6 +30,7 @@ interface Posto360ModalProps {
 export const Posto360Modal: React.FC<Posto360ModalProps> = ({ posto, onClose }) => {
   const {
     colaboradores,
+    coberturasProgramadas,
     openSubstituicaoModal,
     openAlocarModal,
     openEscalaModal,
@@ -39,8 +40,14 @@ export const Posto360Modal: React.FC<Posto360ModalProps> = ({ posto, onClose }) 
     openEditarFuncionarioModal,
   } = useApp();
 
-  // Find all team members belonging to this post
+  // Quadro efetivo (lotação permanente)
   const equipePosto = colaboradores.filter((c) => c.condominioId === posto.id);
+  // Coberturas e extras temporários ativos neste posto
+  const coberturasAtivasPosto = coberturasProgramadas.filter(
+    (c) =>
+      c.postoCoberturaId === posto.id &&
+      (c.status === 'aprovada' || c.status === 'em_andamento' || c.status === 'aguardando_aceite')
+  );
   const operandoAgoraColabs = colaboradores.filter((c) =>
     posto.plantaoAtual.operandoAgora.includes(c.id)
   );
@@ -50,6 +57,7 @@ export const Posto360Modal: React.FC<Posto360ModalProps> = ({ posto, onClose }) 
 
   const isOperacional = posto.status === 'operacional';
   const isCritico = posto.status === 'critico';
+  const hasCoords = typeof posto.latitude === 'number' && typeof posto.longitude === 'number';
 
   return (
     <div
@@ -200,16 +208,22 @@ export const Posto360Modal: React.FC<Posto360ModalProps> = ({ posto, onClose }) 
                       Raio ±{posto.raioGpsMetros || 150}m
                     </span>
                   </div>
-                  <p className="text-[10px] text-slate-400 truncate font-mono">
-                    {posto.latitude ? posto.latitude.toFixed(5) : '-23.55052'}, {posto.longitude ? posto.longitude.toFixed(5) : '-46.63330'}
-                    {posto.metodoCalibracaoGps === 'no_local' && ' · 📡 No Local'}
-                    {posto.metodoCalibracaoGps === 'cep_endereco' && ' · 📍 Via CEP/Endereço'}
-                  </p>
+                  {hasCoords ? (
+                    <p className="text-[10px] text-slate-400 truncate font-mono">
+                      {posto.latitude!.toFixed(5)}, {posto.longitude!.toFixed(5)}
+                      {posto.metodoCalibracaoGps === 'no_local' && ' · No Local'}
+                      {posto.metodoCalibracaoGps === 'cep_endereco' && ' · Via CEP/Endereço'}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-amber-400 truncate font-semibold">
+                      GPS não calibrado — clique em Calibrar para definir coordenadas
+                    </p>
+                  )}
                 </div>
               </div>
 
               <div className="flex items-center gap-1.5 shrink-0">
-                {posto.latitude && (
+                {hasCoords && (
                   <a
                     href={`https://www.google.com/maps?q=${posto.latitude},${posto.longitude}`}
                     target="_blank"
@@ -397,7 +411,37 @@ export const Posto360Modal: React.FC<Posto360ModalProps> = ({ posto, onClose }) 
             )}
           </div>
 
-          {/* 4. Ações Rápidas Integradas (Requested in Section 4) */}
+          {/* 3B. Extras e Coberturas Temporárias Programadas neste Posto */}
+          {coberturasAtivasPosto.length > 0 && (
+            <div className="rounded-xl p-4 bg-amber-950/20 border border-amber-500/30 space-y-2.5">
+              <span className="text-xs font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
+                <CalendarDays className="w-3.5 h-3.5" />
+                Coberturas & Extras Temporários ({coberturasAtivasPosto.length})
+              </span>
+              <div className="space-y-2">
+                {coberturasAtivasPosto.map((cov) => (
+                  <div
+                    key={cov.id}
+                    className="p-2.5 rounded-lg bg-slate-900/80 border border-amber-500/20 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-semibold text-white truncate">
+                        {cov.colaboradorNome || cov.colaboradorId}
+                      </p>
+                      <p className="text-[10px] text-slate-400 font-mono">
+                        {cov.tipo.toUpperCase()} · {cov.dataInicio} a {cov.dataFim} ({cov.horaInicio}–{cov.horaFim})
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
+                      {cov.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 4. Ações Rápidas Integradas */}
           <div className="space-y-2 pt-1">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
               Ações Rápidas de Supervisão
@@ -440,16 +484,19 @@ export const Posto360Modal: React.FC<Posto360ModalProps> = ({ posto, onClose }) 
 
         {/* Modal Footer */}
         <div className="p-3 bg-slate-900/80 border-t border-slate-800 shrink-0 flex items-center justify-between">
-          <button
-            onClick={() => {
-              const query = encodeURIComponent(`${posto.nome} ${posto.endereco}`);
-              window.open(`https://maps.google.com/?q=${query}`, '_blank');
-            }}
+          <a
+            href={
+              hasCoords
+                ? `https://maps.google.com/?q=${posto.latitude},${posto.longitude}`
+                : `https://maps.google.com/?q=${encodeURIComponent(`${posto.nome} ${posto.endereco}`)}`
+            }
+            target="_blank"
+            rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-800 transition-colors"
           >
             <ExternalLink className="w-3.5 h-3.5" />
             Abrir no Google Maps
-          </button>
+          </a>
           <button
             onClick={onClose}
             className="px-4 py-2 text-xs font-medium text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"

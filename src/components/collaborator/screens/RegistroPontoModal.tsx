@@ -29,6 +29,7 @@ import {
   validateGeofence,
   determineNextPunch,
   recordPontoEvento,
+  resolvePunchClassification,
   LocationValidationResult,
 } from '../../../services/pontoService';
 import {
@@ -37,10 +38,8 @@ import {
   FaceQualityResult,
 } from '../../../services/facialRecognitionService';
 import {
-  evaluateFaceQuality,
   extractNeuralFaceEmbedding,
   verifyFace1x1,
-  Verification1x1Result,
 } from '../../../services/faceDetectionEngine';
 import { getActiveBiometricTemplate } from '../../../services/biometricPersistenceService';
 import { downloadComprovantePontoPDF } from '../../../services/documentService';
@@ -74,6 +73,13 @@ export type ReadingState =
   | 'registro_confirmado'    // "Registro confirmado"
   | 'erro';                  // Erro explicativo com retry
 
+function newAttemptId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
   isOpen,
   colaborador,
@@ -85,11 +91,20 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
   onNavigateToRegistros,
 }) => {
   const {
+    currentUser,
     notificarTentativaForaPosto,
     notificarPontoOutroPostoCobertura,
+    alertarPostoSemCoordenadas,
+    coberturasProgramadas,
     condominios,
     empresaInfo,
   } = useApp();
+
+  const canUseGpsSimulator = Boolean(
+    import.meta.env.DEV &&
+      import.meta.env.VITE_ENABLE_GPS_SIMULATOR === 'true' &&
+      currentUser?.role !== 'funcionario'
+  );
 
   // Estados principais
   const [readingState, setReadingState] = useState<ReadingState>('inicializando');
@@ -97,6 +112,7 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
   const [currentClock, setCurrentClock] = useState<string>('');
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [comprovante, setComprovante] = useState<PontoEvento | null>(null);
+  const [isOfflineSaved, setIsOfflineSaved] = useState(false);
   const [geoResult, setGeoResult] = useState<LocationValidationResult | null>(null);
   const [coordsDisplay, setCoordsDisplay] = useState<{ lat: number; lng: number; acc: number } | null>(null);
   const [faceQuality, setFaceQuality] = useState<FaceQualityResult | null>(null);
@@ -104,7 +120,7 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
   const [isFirstEnrollment, setIsFirstEnrollment] = useState(false);
   const [showSimulador, setShowSimulador] = useState(false);
 
-  // Modo de Localização GPS (Sensor Real ou Postos da Empresa para homologação de cobertura)
+  // Modo de Localização GPS (Sensor Real; simulador apenas em DEV autorizado)
   const [simulatedPostoId, setSimulatedPostoId] = useState<string>('gps_real');
 
   // Elementos de vídeo e stream
@@ -112,6 +128,7 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const faceDetectionLoopRef = useRef<number | null>(null);
   const hasCapturedRef = useRef(false);
+  const attemptIdRef = useRef<string>(newAttemptId());
 
   // Determina a batida da jornada automaticamente pelo motor backend
   const nextPunch = determineNextPunch(hojePunches, colaborador);
@@ -153,7 +170,7 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
 
   // Captura e valida as coordenadas de GPS
   const fetchCoordinates = useCallback(async (simMode: string = simulatedPostoId) => {
-    if (simMode !== 'gps_real') {
+    if (canUseGpsSimulator && simMode !== 'gps_real') {
       if (simMode === 'fora_empresa') {
         return { latitude: -23.4000, longitude: -46.5000, accuracy: 12 };
       }
@@ -172,7 +189,7 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
       longitude: pos.coords.longitude,
       accuracy: pos.coords.accuracy,
     };
-  }, [condominios, simulatedPostoId]);
+  }, [canUseGpsSimulator, condominios, simulatedPostoId]);
 
   const refreshLocation = useCallback(async (simMode: string = simulatedPostoId) => {
     try {
@@ -183,25 +200,30 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
         coords.longitude,
         coords.accuracy,
         posto,
-        condominios
+        condominios,
+        empresaInfo.maxGpsAccuracyM
       );
+      if (val.uncalibratedPostos && val.uncalibratedPostos.length > 0) {
+        void alertarPostoSemCoordenadas(val.uncalibratedPostos);
+      }
       setGeoResult(val);
       return { coords, val };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha na captura do sinal de GPS';
       const noGpsVal: LocationValidationResult = {
         hasGps: false,
-        geofenceStatus: 'fora_do_raio',
-        message: `GPS Indisponível: ${msg}. A localização precisa ser comprovada para registro do ponto.`,
+        geofenceStatus: 'gps_indisponivel',
+        decisaoGeofence: 'gps_indisponivel',
+        message: `GPS Indisponível: ${msg}. Não foi possível validar sua localização — tente nova leitura.`,
         designatedPosto: posto,
         isDesignatedPosto: false,
         isCoveragePunch: false,
       };
       setCoordsDisplay(null);
       setGeoResult(noGpsVal);
-      throw new Error(`Sinal de GPS indisponível: ${msg}`);
+      return { coords: null, val: noGpsVal };
     }
-  }, [condominios, fetchCoordinates, posto, simulatedPostoId]);
+  }, [alertarPostoSemCoordenadas, condominios, empresaInfo.maxGpsAccuracyM, fetchCoordinates, posto, simulatedPostoId]);
 
   // Encerra câmera e libera recursos imediatamente
   const stopCamera = useCallback(() => {
@@ -386,36 +408,36 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
     setReadingState('identidade_confirmada');
     await new Promise((r) => setTimeout(r, 400));
 
-    // 2. Verificação de GPS e Perímetro do Posto
+    // 2. Verificação de GPS e Perímetro Multi-Posto (3 estados reais, sem coordenadas fallback)
     setReadingState('registrando_ponto');
 
-    let currentCoords = {
-      latitude: posto.latitude || -23.55052,
-      longitude: posto.longitude || -46.633308,
-      accuracy: 10,
-    };
-    let currentGeo = geoResult;
+    const { coords: currentCoords, val: currentGeo } = await refreshLocation(simulatedPostoId);
 
-    try {
-      const loc = await refreshLocation(simulatedPostoId);
-      currentCoords = loc.coords;
-      currentGeo = loc.val;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Falha no sinal de GPS';
+    if (!currentCoords || !currentGeo.hasGps || currentGeo.geofenceStatus === 'gps_indisponivel') {
       setReadingState('erro');
-      setErrorMessage(`GPS Indisponível: ${msg}. Ative a localização no seu smartphone.`);
+      setErrorMessage(
+        currentGeo.message ||
+          'Sinal GPS indisponível ou permissão negada no aparelho. Ative a localização e tente novamente.'
+      );
       return;
     }
 
-    // REGRA DE SEGURANÇA MÁXIMA (ANTI-FRAUDE):
-    // Bloqueia e emite alerta ao supervisor se estiver fora de QUALQUER posto da empresa
-    const isOut = currentGeo && currentGeo.geofenceStatus === 'fora_do_raio';
-    if (isOut) {
-      const closestRef = currentGeo?.closestPosto || posto;
-      notificarTentativaForaPosto(
+    if (currentGeo.geofenceStatus === 'inconclusivo') {
+      setReadingState('erro');
+      setErrorMessage(
+        currentGeo.message ||
+          'Leitura de GPS inconclusiva (precisão insuficiente ou na borda da cerca). Aproxime-se da guarita e tente nova leitura.'
+      );
+      return;
+    }
+
+    // Somente bloqueia e alerta supervisor se houver prova confiável fora de TODOS os postos válidos da empresa
+    if (currentGeo.geofenceStatus === 'fora_do_raio') {
+      const closestRef = currentGeo.closestPosto || posto;
+      await notificarTentativaForaPosto(
         colaborador,
         closestRef,
-        currentGeo?.distanceM || 0,
+        currentGeo.distanceM || 0,
         {
           latitude: currentCoords.latitude,
           longitude: currentCoords.longitude,
@@ -423,55 +445,64 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
       );
       setReadingState('erro');
       setErrorMessage(
-        `ACESSO BLOQUEADO: O GPS identificou que você está fora dos postos da empresa (distância: ${currentGeo?.distanceM}m do posto mais próximo "${closestRef.nome}", tolerância máxima: ${closestRef.raioGpsMetros || 150}m). O ponto NÃO foi batido e a tentativa foi comunicada ao supervisor.`
+        `ACESSO BLOQUEADO: O GPS confirmou que você está fora de todos os postos válidos da empresa (distância: ${currentGeo.distanceM}m do posto mais próximo "${closestRef.nome}", tolerância: ${closestRef.raioGpsMetros || 150}m, margem ±${currentGeo.accuracyM}m).`
       );
       return;
     }
 
-    // Se estiver em outro posto da empresa, registra como Cobertura de Falta
-    const targetPosto = currentGeo?.detectedPosto || posto;
-    const isCobertura = Boolean(currentGeo?.isCoveragePunch);
+    // Dentro de algum posto ativo da empresa: identifica se é posto habitual, cobertura programada ou divergência
+    const targetPosto = currentGeo.detectedPosto || posto;
+    const minhasCoberturas = coberturasProgramadas.filter(
+      (c) => c.colaboradorId === colaborador.id
+    );
+    const classif = resolvePunchClassification(
+      colaborador.condominioId,
+      targetPosto.id,
+      minhasCoberturas,
+      new Date()
+    );
 
-    if (isCobertura) {
+    const enrichedGeo: LocationValidationResult = {
+      ...currentGeo,
+      classificacaoPosto: classif.classificacao,
+      coverageAssignmentId: classif.coverageAssignment?.id,
+    };
+
+    const isOutroPosto = targetPosto.id !== posto.id;
+    const isProgramada =
+      classif.classificacao === 'cobertura_programada' ||
+      classif.classificacao === 'extra_programada';
+
+    if (isOutroPosto) {
       await notificarPontoOutroPostoCobertura(
         colaborador,
         posto,
         targetPosto,
-        currentGeo?.distanceM || 0,
+        currentGeo.distanceM || 0,
         {
           latitude: currentCoords.latitude,
           longitude: currentCoords.longitude,
-        }
+        },
+        isProgramada
       );
     }
 
-    // 3. Gravação Oficial do Ponto no Backend / Supabase
+    // 3. Gravação Transacional Idempotente no Supabase
     try {
-      const safeGeo: LocationValidationResult = currentGeo || {
-        hasGps: true,
-        latitude: targetPosto.latitude || -23.55052,
-        longitude: targetPosto.longitude || -46.633308,
-        accuracyM: 10,
-        distanceM: 0,
-        geofenceStatus: 'dentro_do_raio',
-        message: 'Presença confirmada no posto da empresa via GPS',
-        detectedPosto: targetPosto,
-        designatedPosto: posto,
-        isDesignatedPosto: !isCobertura,
-        isCoveragePunch: isCobertura,
-      };
-
       const result = await recordPontoEvento(
         colaborador,
         targetPosto,
         effectivePunchType,
-        safeGeo,
+        enrichedGeo,
         undefined,
         'biometria_facial',
-        isCobertura
-          ? `Cobertura de escala no posto ${targetPosto.nome} (Posto habitual: ${posto.nome})`
+        isOutroPosto
+          ? isProgramada
+            ? `${classif.classificacao === 'extra_programada' ? 'Extra' : 'Cobertura'} programada em ${targetPosto.nome} (Posto base: ${posto.nome})`
+            : `Divergência de posto: registro em ${targetPosto.nome} (Posto base: ${posto.nome})`
           : undefined,
-        dataUrl
+        dataUrl,
+        attemptIdRef.current
       );
 
       if (result.isDuplicated) {
@@ -481,11 +512,11 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
       }
 
       // 4. Conclusão e Transição de Sucesso
+      setIsOfflineSaved(result.offlinePending);
       setComprovante(result.evento);
       setReadingState('registro_confirmado');
       stopCamera();
 
-      // Atualiza o estado global com o novo evento gravado
       onSuccess(result.evento);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro no servidor';
@@ -518,6 +549,7 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
 
   // Reiniciar leitura facial
   const handleRestartReading = () => {
+    attemptIdRef.current = newAttemptId();
     setErrorMessage(null);
     setCapturedPhoto(null);
     setFaceMatchResult(null);
@@ -528,6 +560,8 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
   // Inicialização e limpeza ao abrir/fechar
   useEffect(() => {
     if (isOpen) {
+      attemptIdRef.current = newAttemptId();
+      setIsOfflineSaved(false);
       refreshLocation(simulatedPostoId);
       startCamera();
     } else {
@@ -787,15 +821,23 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
             <CheckCircle2 className="w-9 h-9 sm:w-11 sm:h-11" />
           </div>
 
-          <span className="text-[10px] font-extrabold uppercase tracking-widest text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-3 py-0.5 rounded-full mb-1">
-            Registro Homologado · Portaria MTE 671
+          <span
+            className={`text-[10px] font-extrabold uppercase tracking-widest px-3 py-0.5 rounded-full mb-1 border ${
+              isOfflineSaved
+                ? 'text-amber-300 bg-amber-500/15 border-amber-500/40'
+                : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+            }`}
+          >
+            {isOfflineSaved
+              ? 'Pendente de Sincronização · Fila Local'
+              : 'Registro Confirmado no Servidor · Portaria MTE 671'}
           </span>
 
           <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
-            Ponto Registrado com Sucesso!
+            {isOfflineSaved ? 'Ponto Salvo na Fila Local' : 'Ponto Registrado com Sucesso!'}
           </h2>
           <p className="text-xs text-slate-300 mt-0.5">
-            {comprovante?.labelEvento || punchTypeInfo.title} gravada com autenticação facial e GPS
+            {comprovante?.labelEvento || punchTypeInfo.title} com autenticação facial e GPS
           </p>
 
           {/* Cartão de Detalhes Oficiais do Comprovante */}
@@ -848,7 +890,12 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
                 )}
                 {comprovante.isCobertura && (
                   <div className="p-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-[10px] text-amber-200 mt-1">
-                    <strong>Cobertura Registrada:</strong> Posto habitual: {comprovante.postoOriginalNome || posto.nome}. O supervisor foi notificado.
+                    <strong>
+                      {comprovante.classificacaoPosto === 'divergencia_posto'
+                        ? 'Divergência de Posto:'
+                        : 'Cobertura/Extra Programada:'}
+                    </strong>{' '}
+                    Posto habitual: {comprovante.postoOriginalNome || posto.nome} (mantido sem alteração).
                   </div>
                 )}
               </div>
@@ -861,7 +908,7 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
               type="button"
               onClick={() => {
                 if (comprovante) {
-                  downloadComprovantePontoPDF(comprovante, colaborador, empresaInfo);
+                  void downloadComprovantePontoPDF(comprovante, colaborador, empresaInfo);
                 }
               }}
               className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
@@ -936,19 +983,27 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
 
               {geoResult && (
                 <span
-                  className={`text-[9px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                  className={`text-[9px] font-bold px-2 py-0.5 rounded-full shrink-0 border ${
                     geoResult.geofenceStatus === 'dentro_do_raio'
                       ? geoResult.isCoveragePunch
-                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                        : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                      : 'bg-red-500/20 text-red-300 border border-red-500/30'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                      : geoResult.geofenceStatus === 'inconclusivo'
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                      : geoResult.geofenceStatus === 'gps_indisponivel'
+                      ? 'bg-slate-700/40 text-slate-300 border-slate-600/50'
+                      : 'bg-red-500/20 text-red-300 border-red-500/30'
                   }`}
                 >
                   {geoResult.geofenceStatus === 'dentro_do_raio'
                     ? geoResult.isCoveragePunch
-                      ? 'Cobertura em Outro Posto'
+                      ? 'Outro Posto da Empresa'
                       : 'No Posto'
-                    : 'Fora do Posto'}
+                    : geoResult.geofenceStatus === 'inconclusivo'
+                    ? 'Leitura Inconclusiva'
+                    : geoResult.geofenceStatus === 'gps_indisponivel'
+                    ? 'Sem Sinal GPS'
+                    : 'Fora dos Postos'}
                 </span>
               )}
             </div>
@@ -963,49 +1018,53 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
                 </span>
               </span>
               <span className="font-mono text-slate-300 shrink-0">
-                {geoResult ? `${geoResult.distanceM}m do posto` : '--'}
+                {geoResult?.distanceM !== undefined ? `${geoResult.distanceM}m do posto` : '--'}
               </span>
             </div>
 
-            {/* Alternador discreto para homologação de testes multi-postos */}
-            <div className="pt-0.5">
-              <button
-                type="button"
-                onClick={() => setShowSimulador(!showSimulador)}
-                className="text-[9px] text-slate-500 hover:text-blue-400 flex items-center gap-1 cursor-pointer transition-colors"
-              >
-                <span>Opções de Teste de GPS / Postos</span>
-                {showSimulador ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
-              </button>
+            {/* Simulador de GPS estrito ao ambiente DEV com VITE_ENABLE_GPS_SIMULATOR=true */}
+            {canUseGpsSimulator && (
+              <div className="pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => setShowSimulador(!showSimulador)}
+                  className="text-[9px] text-slate-500 hover:text-blue-400 flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <span>Homologação DEV de GPS / Postos</span>
+                  {showSimulador ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
+                </button>
 
-              {showSimulador && (
-                <div className="pt-1.5 animate-in fade-in">
-                  <select
-                    value={simulatedPostoId}
-                    onChange={(e) => {
-                      const newMode = e.target.value;
-                      setSimulatedPostoId(newMode);
-                      refreshLocation(newMode);
-                    }}
-                    className="w-full text-[10px] bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="gps_real">📍 Sensor GPS Real do Aparelho</option>
-                    <optgroup label="Postos da Empresa (Válidos)">
-                      {condominios.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.id === posto.id
-                            ? `🏢 ${c.nome} (Posto Habitual)`
-                            : `🏢 ${c.nome} (Cobrir Falta em Outro Posto)`}
-                        </option>
-                      ))}
-                    </optgroup>
-                    <optgroup label="Fora dos Postos (Bloqueio Anti-Fraude)">
-                      <option value="fora_empresa">🚫 Fora da Empresa (Sem nenhum posto)</option>
-                    </optgroup>
-                  </select>
-                </div>
-              )}
-            </div>
+                {showSimulador && (
+                  <div className="pt-1.5 animate-in fade-in">
+                    <select
+                      value={simulatedPostoId}
+                      onChange={(e) => {
+                        const newMode = e.target.value;
+                        setSimulatedPostoId(newMode);
+                        void refreshLocation(newMode);
+                      }}
+                      className="w-full text-[10px] bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="gps_real">Sensor GPS Real do Aparelho</option>
+                      <optgroup label="Postos da Empresa (Válidos)">
+                        {condominios
+                          .filter((c) => c.ativo !== false && c.latitude && c.longitude)
+                          .map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.id === posto.id
+                                ? `${c.nome} (Posto Habitual)`
+                                : `${c.nome} (Outro Posto)`}
+                            </option>
+                          ))}
+                      </optgroup>
+                      <optgroup label="Fora dos Postos">
+                        <option value="fora_empresa">Fora da Empresa</option>
+                      </optgroup>
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </section>
       )}

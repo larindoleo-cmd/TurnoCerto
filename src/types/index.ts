@@ -53,6 +53,7 @@ export interface Colaborador {
   valorBonus?: number;
   // Credenciais de Acesso ao Painel
   email?: string;
+  senha?: string;
   role?: 'admin' | 'supervisor' | 'rh' | 'funcionario';
   primeiroAcessoConcluido?: boolean;
 }
@@ -67,6 +68,7 @@ export interface NovoFuncionarioPayload {
   dataNascimento: string;
   // Credenciais de Acesso ao Painel do Colaborador
   email?: string;
+  senha?: string;
   role?: 'admin' | 'supervisor' | 'rh' | 'funcionario';
   // Etapa 2
   pis: string;
@@ -123,6 +125,7 @@ export interface CondominioPosto {
   telefoneSindico: string;
   instrucoesGuarita: string;
   foto?: string;
+  ativo?: boolean;
   latitude?: number;
   longitude?: number;
   raioGpsMetros?: number;
@@ -143,6 +146,7 @@ export interface AlertaOperacional {
     | 'tentativa_ponto_fora_posto'
     | 'ponto_posto_cobertura'
     | 'posto_divergente'
+    | 'posto_sem_coordenadas'
     | 'solicitacao_biometria'
     | 'solicitacao_senha'
     | 'biometria_pendente';
@@ -174,14 +178,18 @@ export interface Ocorrencia {
   resolvida: boolean;
 }
 
+export type StatusPublicacaoHolerite = 'rascunho' | 'agendado' | 'publicado' | 'erro' | 'retificado';
+
 export interface HoleriteRegistro {
   id: string;
+  empresaId?: string;
   colaboradorId: string;
   colaboradorNome: string;
   matricula: string;
   funcao: string;
   postoNome: string;
   mesReferencia: string; // 'Outubro/2026'
+  competencia?: string;   // '2026-10'
   salarioBase: number;
   adicionalPericulosidade: number; // 30%
   adicionalNoturno: number;
@@ -199,6 +207,19 @@ export interface HoleriteRegistro {
   liquidoReceber: number;
   statusEnvio: 'Assinado' | 'Aguardando Assinatura' | 'Pendente';
   dataEmissao: string;
+  loteId?: string;
+  versao?: number;
+  statusPublicacao?: StatusPublicacaoHolerite;
+  agendadoPara?: string;
+  publicadoEm?: string;
+  storagePath?: string;
+  pdfSha256?: string;
+  retificadoDeId?: string;
+  motivoRetificacao?: string;
+  cienciaConfirmadaEm?: string;
+  cienciaUsuarioId?: string;
+  cienciaDeclaracaoVersao?: string;
+  ultimoErro?: string;
 }
 
 export interface PontoRegistro {
@@ -211,7 +232,7 @@ export interface PontoRegistro {
   entrada2: string;
   saida2: string;
   totalHoras: string;
-  statusPonto: 'Regular' | 'Atraso' | 'Hora Extra' | 'Incompleto' | 'Falta';
+  statusPonto: 'Regular' | 'Atraso' | 'Hora Extra' | 'Incompleto' | 'Falta' | 'Divergente' | 'Cobertura';
   localizacaoGPS: string;
 }
 
@@ -232,6 +253,7 @@ export interface AtestadoMedico {
 }
 
 export interface EmpresaInfo {
+  id?: string;
   razaoSocial: string;
   nomeFantasia: string;
   cnpj: string;
@@ -250,6 +272,8 @@ export interface EmpresaInfo {
   chavePix?: string;
   logoUrl?: string;
   apresentacao?: string;
+  maxGpsAccuracyM?: number;
+  exigeAceiteCobertura?: boolean;
 }
 
 export interface SupabaseConfig {
@@ -286,8 +310,15 @@ export type TipoBatidaPonto =
 export type StatusGeofence =
   | 'dentro_do_raio'
   | 'fora_do_raio'
+  | 'inconclusivo'
   | 'gps_indisponivel'
   | 'pendente';
+
+export type ClassificacaoPosto =
+  | 'posto_regular'
+  | 'cobertura_programada'
+  | 'extra_programada'
+  | 'divergencia_posto';
 
 export interface PontoEvento {
   id: string;
@@ -303,12 +334,19 @@ export interface PontoEvento {
   latitude?: number;
   longitude?: number;
   accuracyM?: number;
+  accuracyRealM?: number;
   geofenceStatus: StatusGeofence;
+  decisaoGeofence?: StatusGeofence;
   distanceM?: number;
   credentialId?: string;
   fotoBiometriaUrl?: string;
   metodoAutenticacao: 'biometria_facial' | 'biometria_passkey' | 'autenticador_dispositivo' | 'excecao_autorizada';
   verificationStatus: 'confirmado' | 'pendente' | 'rejeitado';
+  classificacaoPosto?: ClassificacaoPosto;
+  postoBaseId?: string;
+  postoDetectadoId?: string;
+  coverageAssignmentId?: string;
+  ambiguidadeDetectada?: boolean;
   idempotencyKey: string;
   comprovanteNumero: string;
   motivoExcecao?: string;
@@ -336,14 +374,142 @@ export interface EmployeePasskey {
 
 export interface ColaboradorDocumento {
   id: string;
+  empresaId?: string;
   colaboradorId: string;
+  solicitacaoId?: string;
   titulo: string;
-  tipo: 'RG' | 'CPF' | 'Comprovante Residência' | 'Carteira de Trabalho' | 'Declaração' | 'Contrato' | 'Outro';
+  tipo: 'RG' | 'CPF' | 'Comprovante Residência' | 'Carteira de Trabalho' | 'Declaração' | 'Contrato' | 'ASO / Exame' | 'Certificado' | 'Outro';
   status: 'valido' | 'pendente' | 'solicitado' | 'recusado' | 'expirado';
+  versao?: number;
+  documentoAnteriorId?: string;
   dataEmissao?: string;
   dataValidade?: string;
   arquivoUrl?: string;
+  storageBucket?: string;
+  storagePath?: string;
+  mimeType?: string;
+  fileSizeBytes?: number;
+  sha256?: string;
   tamanhoKb?: number;
+  revisadoPorNome?: string;
+  revisadoEm?: string;
+  observacaoRevisao?: string;
+}
+
+export type TipoCobertura = 'extra' | 'cobertura' | 'substituicao' | 'alocacao_temporaria';
+export type StatusCobertura = 'aguardando_aceite' | 'aprovada' | 'recusada' | 'em_andamento' | 'concluida' | 'cancelada';
+
+export interface CoberturaProgramada {
+  id: string;
+  empresaId: string;
+  colaboradorId: string;
+  colaboradorNome?: string;
+  postoPrincipalId?: string | null;
+  postoCoberturaId: string;
+  postoCoberturaNome?: string;
+  tipo: TipoCobertura;
+  dataInicio: string; // YYYY-MM-DD
+  dataFim: string;    // YYYY-MM-DD
+  horaInicio: string; // HH:MM
+  horaFim: string;    // HH:MM
+  motivo?: string;
+  substituidoColaboradorId?: string | null;
+  alertaOrigemId?: string | null;
+  valorExtraFT?: number;
+  status: StatusCobertura;
+  aceiteColaborador?: boolean | null;
+  aceiteEm?: string | null;
+  recusaMotivo?: string | null;
+  criadoPorNome?: string;
+  criadoEm: string;
+  atualizadoEm?: string;
+}
+
+export interface CoberturaHistorico {
+  id: string;
+  coberturaId: string;
+  acao: 'criada' | 'aprovada' | 'aceita' | 'recusada' | 'cancelada' | 'concluida' | 'executada_no_ponto' | 'editada';
+  atorNome?: string;
+  detalhes?: string;
+  createdAt: string;
+}
+
+export type StatusSolicitacaoDocumento =
+  | 'pendente_envio'
+  | 'enviado_analise'
+  | 'aprovado'
+  | 'recusado'
+  | 'atualizacao_solicitada'
+  | 'cancelado';
+
+export interface DocumentoSolicitacao {
+  id: string;
+  empresaId: string;
+  colaboradorId: string;
+  colaboradorNome?: string;
+  tipoDocumento: string;
+  titulo: string;
+  instrucoes?: string;
+  prazoEntrega?: string;
+  obrigatorio: boolean;
+  status: StatusSolicitacaoDocumento;
+  solicitadoPorNome?: string;
+  criadoEm: string;
+  atualizadoEm?: string;
+}
+
+export interface DocumentoHistorico {
+  id: string;
+  solicitacaoId?: string;
+  documentoId?: string;
+  colaboradorId: string;
+  acao: 'solicitado' | 'enviado' | 'aprovado' | 'recusado' | 'atualizacao_solicitada' | 'visualizado' | 'baixado';
+  atorNome?: string;
+  detalhes?: string;
+  createdAt: string;
+}
+
+export interface HoleriteLote {
+  id: string;
+  empresaId: string;
+  competencia: string;
+  competenciaLabel: string;
+  titulo: string;
+  status: 'rascunho' | 'agendado' | 'publicando' | 'publicado' | 'erro' | 'retificado';
+  agendadoPara?: string | null;
+  publicadoEm?: string | null;
+  totalItens: number;
+  totalErros: number;
+  ultimoErro?: string | null;
+  tentativas: number;
+  criadoPorNome?: string;
+  criadoEm: string;
+}
+
+export interface HoleriteEvento {
+  id: string;
+  holeriteId?: string;
+  loteId?: string;
+  acao: string;
+  atorNome?: string;
+  detalhes?: string;
+  createdAt: string;
+}
+
+export interface NotificacaoSistema {
+  id: string;
+  empresaId: string;
+  destinatarioColaboradorId?: string | null;
+  destinatarioRole?: 'admin' | 'supervisor' | 'rh' | 'funcionario' | null;
+  categoria: 'ponto' | 'divergencia_posto' | 'cobertura' | 'documento' | 'holerite' | 'alerta_config' | 'sistema';
+  titulo: string;
+  mensagem: string;
+  referenciaTipo?: string;
+  referenciaId?: string;
+  linkDestino?: string;
+  lida: boolean;
+  lidaEm?: string | null;
+  createdAt: string;
 }
 
 export interface SolicitacaoCorrecaoPonto {
@@ -351,7 +517,7 @@ export interface SolicitacaoCorrecaoPonto {
   colaboradorId: string;
   colaboradorNome: string;
   dataPonto: string;
-  tipoCorrecao: 'esquecimento' | 'divergencia_horario' | 'problema_dispositivo' | 'servico_externo';
+  tipoCorrecao: 'esquecimento' | 'divergencia_horario' | 'problema_dispositivo' | 'servico_externo' | 'ajuste_escala';
   justificativa: string;
   status: 'pendente' | 'aprovado' | 'rejeitado';
   criadoEm: string;

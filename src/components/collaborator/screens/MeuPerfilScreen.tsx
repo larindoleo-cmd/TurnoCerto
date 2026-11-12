@@ -107,14 +107,22 @@ export const MeuPerfilScreen: React.FC<MeuPerfilScreenProps> = ({
         <div className="absolute top-0 right-0 w-36 h-36 bg-blue-500/10 rounded-full blur-3xl -z-10" />
 
         <div className="relative inline-block mx-auto">
-          <img
-            src={
-              colaborador.foto ||
-              'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&auto=format&fit=crop&q=80'
-            }
-            alt={colaborador.nome}
-            className="w-20 h-20 sm:w-22 sm:h-22 rounded-2xl object-cover border-2 border-blue-400/50 shadow-xl mx-auto"
-          />
+          {colaborador.foto ? (
+            <img
+              src={colaborador.foto}
+              alt={colaborador.nome}
+              className="w-20 h-20 sm:w-22 sm:h-22 rounded-2xl object-cover border-2 border-blue-400/50 shadow-xl mx-auto"
+            />
+          ) : (
+            <div className="w-20 h-20 sm:w-22 sm:h-22 rounded-2xl bg-gradient-to-br from-blue-600/35 to-indigo-700/45 border-2 border-blue-400/50 shadow-xl mx-auto flex items-center justify-center font-black text-2xl text-blue-100">
+              {colaborador.nome
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 2)
+                .map((p) => p[0]?.toUpperCase() || '')
+                .join('')}
+            </div>
+          )}
           <span className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-emerald-500 border-2 border-[#09102A] flex items-center justify-center text-white shadow-sm">
             <CheckCircle2 className="w-4 h-4" />
           </span>

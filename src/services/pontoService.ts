@@ -1,9 +1,9 @@
 /**
  * TurnoCerto - Ponto Service com Biometria & GPS Real Multi-Posto
- * Conforme Portaria 671 MTE e Requisitos Arquiteturais TurnoCerto.
- * Implementa validação geodésica em 3 estados (Haversine), controle rigoroso de
- * precisão do sensor, identificação de qualquer posto da empresa, coberturas
- * programadas, controle de idempotência, auditoria e emissão de comprovante oficial.
+ * Implementa validação geodésica em 3 estados (Haversine), limite configurável
+ * de accuracy da empresa, identificação de qualquer posto ativo da mesma empresa,
+ * detecção de postos sem calibração, classificação regular vs cobertura vs divergência,
+ * turno noturno/múltiplos turnos, idempotência determinística e RPC transacional.
  */
 
 import {
@@ -13,6 +13,7 @@ import {
   TipoBatidaPonto,
   StatusGeofence,
   ClassificacaoPosto,
+  CoberturaProgramada,
 } from '../types';
 import { getSupabase } from '../lib/supabase';
 
@@ -33,6 +34,8 @@ export interface LocationValidationResult {
   classificacaoPosto?: ClassificacaoPosto;
   coverageAssignmentId?: string;
   ambiguidadeDetectada?: boolean;
+  ambiguousPostosIds?: string[];
+  uncalibratedPostos?: CondominioPosto[];
   closestPosto?: CondominioPosto;
   closestDistanceM?: number;
 }
@@ -43,9 +46,12 @@ export interface NextPunchInfo {
   descricao: string;
   horarioPrevisto: string;
   isComplete: boolean;
+  shiftIndex?: number;
+  isOvernightOpen?: boolean;
 }
 
 const PONTO_EVENTOS_LOCAL_KEY = 'turnocerto_ponto_eventos_v1';
+const PONTO_SYNC_QUEUE_KEY = 'turnocerto_ponto_sync_queue_v1';
 export const DEFAULT_MAX_ACCURACY_THRESHOLD_M = 80;
 
 /**
@@ -57,7 +63,7 @@ export function calculateDistanceMeters(
   lat2: number,
   lon2: number
 ): number {
-  const R = 6371000; // Raio médio da Terra em metros
+  const R = 6371000;
   const toRad = (deg: number) => (deg * Math.PI) / 180;
 
   const phi1 = toRad(lat1);
@@ -70,16 +76,15 @@ export function calculateDistanceMeters(
     Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
 
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
   return Math.round(R * c);
 }
 
 /**
- * Obtém as coordenadas reais do dispositivo móvel através da Geolocation API do navegador
+ * Obtém leitura real de GPS do dispositivo sem qualquer coordenada fallback.
  */
 export async function getDeviceCoordinates(): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
       reject(new Error('Geolocalização não é suportada neste dispositivo'));
       return;
     }
@@ -92,11 +97,30 @@ export async function getDeviceCoordinates(): Promise<GeolocationPosition> {
   });
 }
 
+export function isPostoActive(p: CondominioPosto): boolean {
+  return p.ativo !== false;
+}
+
+export function hasValidGeofenceCoords(p: CondominioPosto): boolean {
+  return (
+    typeof p.latitude === 'number' &&
+    Number.isFinite(p.latitude) &&
+    typeof p.longitude === 'number' &&
+    Number.isFinite(p.longitude) &&
+    Math.abs(p.latitude) <= 90 &&
+    Math.abs(p.longitude) <= 180 &&
+    (p.latitude !== 0 || p.longitude !== 0)
+  );
+}
+
 /**
- * Validação de Geofence em 3 Estados Conforme Regra de Negócio:
- * - Dentro com confiança: distância + accuracy <= raio
- * - Inconclusivo: o intervalo de erro cruza a cerca virtual
- * - Fora com confiança: distância - accuracy > raio para TODOS os postos elegíveis
+ * Validação de Geofence em 3 Estados Conforme Regra Imutável:
+ * - Considera TODOS os postos ativos e georreferenciados da empresa.
+ * - Postos ativos sem coordenadas são reportados para alerta de configuração,
+ *   mas nunca contam como prova de que o colaborador está fora.
+ * - Dentro com confiança: distance + accuracy <= raio
+ * - Inconclusivo: intervalo [distance - accuracy, distance + accuracy] cruza raio
+ * - Fora com confiança: distance - accuracy > raio para TODOS os postos elegíveis
  */
 export function validateGeofence(
   userLat: number,
@@ -106,37 +130,42 @@ export function validateGeofence(
   allCompanyPostos?: CondominioPosto[],
   maxAccuracyThresholdM: number = DEFAULT_MAX_ACCURACY_THRESHOLD_M
 ): LocationValidationResult {
-  const safeAccuracy = Math.max(1, Math.round(accuracyM || 10));
+  const safeThreshold = Math.max(10, Math.min(500, Math.round(maxAccuracyThresholdM || DEFAULT_MAX_ACCURACY_THRESHOLD_M)));
 
-  // 1. Verificação de precisão aceitável do sensor GPS
-  if (safeAccuracy > maxAccuracyThresholdM) {
+  if (!Number.isFinite(userLat) || !Number.isFinite(userLng) || !Number.isFinite(accuracyM) || accuracyM <= 0) {
+    return {
+      hasGps: false,
+      geofenceStatus: 'gps_indisponivel',
+      decisaoGeofence: 'gps_indisponivel',
+      designatedPosto: posto,
+      isDesignatedPosto: false,
+      isCoveragePunch: false,
+      message: 'Leitura GPS inválida ou ausente no dispositivo. Solicite nova leitura.',
+    };
+  }
+
+  const safeAccuracy = Math.max(1, Math.round(accuracyM));
+
+  const postosPool = (allCompanyPostos && allCompanyPostos.length > 0 ? allCompanyPostos : [posto]).filter(isPostoActive);
+  const uncalibratedPostos = postosPool.filter((p) => !hasValidGeofenceCoords(p));
+  const calibratedPostos = postosPool.filter(hasValidGeofenceCoords);
+
+  if (safeAccuracy > safeThreshold) {
     return {
       hasGps: true,
       latitude: userLat,
       longitude: userLng,
       accuracyM: safeAccuracy,
       accuracyRealM: safeAccuracy,
-      distanceM: 0,
       geofenceStatus: 'inconclusivo',
       decisaoGeofence: 'inconclusivo',
       designatedPosto: posto,
-      isDesignatedPosto: true,
+      isDesignatedPosto: false,
       isCoveragePunch: false,
-      message: `Precisão do sinal GPS insuficiente (±${safeAccuracy}m, limite da empresa: ±${maxAccuracyThresholdM}m). Por favor, aproxime-se de área aberta e solicite nova leitura.`,
+      uncalibratedPostos,
+      message: `Precisão do sinal GPS insuficiente (±${safeAccuracy}m; máximo configurado da empresa: ±${safeThreshold}m). Aproxime-se de área aberta e tente nova leitura.`,
     };
   }
-
-  const postosList = allCompanyPostos && allCompanyPostos.length > 0 ? allCompanyPostos : [posto];
-
-  // Filtra apenas postos ativos que possuem coordenadas calibradas
-  const calibratedPostos = postosList.filter(
-    (p) =>
-      p.latitude !== undefined &&
-      p.latitude !== null &&
-      p.longitude !== undefined &&
-      p.longitude !== null &&
-      (p.status === undefined || p.status === 'operacional' || p.status === 'atencao')
-  );
 
   if (calibratedPostos.length === 0) {
     return {
@@ -145,17 +174,16 @@ export function validateGeofence(
       longitude: userLng,
       accuracyM: safeAccuracy,
       accuracyRealM: safeAccuracy,
-      distanceM: 0,
-      geofenceStatus: 'pendente',
-      decisaoGeofence: 'pendente',
+      geofenceStatus: 'inconclusivo',
+      decisaoGeofence: 'inconclusivo',
       designatedPosto: posto,
-      isDesignatedPosto: true,
+      isDesignatedPosto: false,
       isCoveragePunch: false,
-      message: `Posto "${posto.nome}" aguardando calibração oficial de GPS. Ponto autorizado com coordenadas do dispositivo para auditoria do gestor.`,
+      uncalibratedPostos,
+      message: `Nenhum posto ativo possui coordenadas/geofence configuradas. A gestão foi alertada para calibração GPS; utilize fluxo de exceção autorizada se necessário.`,
     };
   }
 
-  // Avaliação dos 3 estados para cada posto
   interface PostoEvaluation {
     posto: CondominioPosto;
     distance: number;
@@ -166,7 +194,7 @@ export function validateGeofence(
   const evaluations: PostoEvaluation[] = calibratedPostos.map((p) => {
     const pLat = Number(p.latitude);
     const pLng = Number(p.longitude);
-    const maxRadius = p.raioGpsMetros || 150;
+    const maxRadius = Math.max(20, Math.round(Number(p.raioGpsMetros) || 150));
     const distance = calculateDistanceMeters(userLat, userLng, pLat, pLng);
 
     let state: 'dentro' | 'inconclusivo' | 'fora';
@@ -183,15 +211,17 @@ export function validateGeofence(
 
   // 1. Candidatos DENTRO com confiança
   const dentroCandidatos = evaluations.filter((e) => e.state === 'dentro');
-
   if (dentroCandidatos.length > 0) {
-    // Desempate determinístico: menor distância
-    dentroCandidatos.sort((a, b) => a.distance - b.distance);
-    const chosen = dentroCandidatos[0];
-    const ambiguidade =
-      dentroCandidatos.length > 1 &&
-      Math.abs(dentroCandidatos[0].distance - dentroCandidatos[1].distance) < 15;
+    // Desempate determinístico: menor distância, depois prioridade ao posto principal, depois ID lexicográfico
+    dentroCandidatos.sort((a, b) => {
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      if (a.posto.id === posto.id) return -1;
+      if (b.posto.id === posto.id) return 1;
+      return a.posto.id.localeCompare(b.posto.id);
+    });
 
+    const chosen = dentroCandidatos[0];
+    const ambiguidade = dentroCandidatos.length > 1;
     const isDesignated = chosen.posto.id === posto.id;
 
     return {
@@ -208,17 +238,19 @@ export function validateGeofence(
       isDesignatedPosto: isDesignated,
       isCoveragePunch: !isDesignated,
       ambiguidadeDetectada: ambiguidade,
+      ambiguousPostosIds: ambiguidade ? dentroCandidatos.map((c) => c.posto.id) : undefined,
+      uncalibratedPostos,
       classificacaoPosto: isDesignated ? 'posto_regular' : 'divergencia_posto',
       message: isDesignated
-        ? `Localização confirmada! Você está a ${chosen.distance}m do seu posto cadastrado "${posto.nome}" (tolerância: ${chosen.maxRadius}m).`
-        : `Presença confirmada no posto da empresa "${chosen.posto.nome}" (${chosen.distance}m). Posto diferente da lotação habitual.`,
+        ? `Localização confirmada no posto "${chosen.posto.nome}" (${chosen.distance}m, margem ±${safeAccuracy}m, raio ${chosen.maxRadius}m).`
+        : `Localização confirmada em "${chosen.posto.nome}" (${chosen.distance}m, margem ±${safeAccuracy}m). Posto diferente da lotação habitual ("${posto.nome}").`,
     };
   }
 
-  // 2. Candidatos INCONCLUSIVOS (o intervalo de erro cruza a borda)
+  // 2. Candidatos INCONCLUSIVOS (borda da cerca cruzada pelo intervalo de erro)
   const inconclusivoCandidatos = evaluations.filter((e) => e.state === 'inconclusivo');
   if (inconclusivoCandidatos.length > 0) {
-    inconclusivoCandidatos.sort((a, b) => a.distance - b.distance);
+    inconclusivoCandidatos.sort((a, b) => a.distance - b.distance || a.posto.id.localeCompare(b.posto.id));
     const candidate = inconclusivoCandidatos[0];
 
     return {
@@ -234,12 +266,31 @@ export function validateGeofence(
       designatedPosto: posto,
       isDesignatedPosto: candidate.posto.id === posto.id,
       isCoveragePunch: candidate.posto.id !== posto.id,
-      message: `Leitura de GPS inconclusiva na borda do posto "${candidate.posto.nome}" (distância: ${candidate.distance}m, raio: ${candidate.maxRadius}m, margem de erro: ±${safeAccuracy}m). Por favor, dê alguns passos para dentro das dependências do posto e tente novamente.`,
+      uncalibratedPostos,
+      message: `Leitura GPS inconclusiva próxima ao limite de "${candidate.posto.nome}" (distância ${candidate.distance}m ±${safeAccuracy}m vs raio ${candidate.maxRadius}m). Aproxime-se da guarita e solicite nova leitura.`,
     };
   }
 
-  // 3. Fora de TODOS os postos da empresa com confiança (distance - safeAccuracy > maxRadius)
-  evaluations.sort((a, b) => a.distance - b.distance);
+  // 3. Se existe posto sem coordenadas na empresa e o posto principal está sem coordenadas, não provar "fora"
+  if (uncalibratedPostos.some((u) => u.id === posto.id)) {
+    return {
+      hasGps: true,
+      latitude: userLat,
+      longitude: userLng,
+      accuracyM: safeAccuracy,
+      accuracyRealM: safeAccuracy,
+      geofenceStatus: 'inconclusivo',
+      decisaoGeofence: 'inconclusivo',
+      designatedPosto: posto,
+      isDesignatedPosto: false,
+      isCoveragePunch: false,
+      uncalibratedPostos,
+      message: `Seu posto-base "${posto.nome}" ainda está sem coordenadas GPS configuradas. A gestão foi notificada para calibração.`,
+    };
+  }
+
+  // 4. Fora com confiança de TODOS os postos calibrados da empresa
+  evaluations.sort((a, b) => a.distance - b.distance || a.posto.id.localeCompare(b.posto.id));
   const closest = evaluations[0];
 
   return {
@@ -254,75 +305,153 @@ export function validateGeofence(
     designatedPosto: posto,
     isDesignatedPosto: false,
     isCoveragePunch: false,
+    uncalibratedPostos,
     closestPosto: closest.posto,
     closestDistanceM: closest.distance,
-    message: `Fora do perímetro de todos os postos cadastrados da empresa. Posto mais próximo: "${closest.posto.nome}" a ${closest.distance}m de distância (tolerância: ${closest.maxRadius}m, precisão: ±${safeAccuracy}m). O ponto só pode ser registrado dentro das instalações da empresa.`,
+    message: `Fora do perímetro de todos os postos válidos da empresa. Mais próximo: "${closest.posto.nome}" a ${closest.distance}m (raio ${closest.maxRadius}m, margem ±${safeAccuracy}m).`,
   };
 }
 
 /**
- * Determina a próxima batida de ponto esperada para o colaborador na jornada vigente
+ * Determina a próxima batida suportando:
+ * - Turno padrão (4 batidas) e turnos noturnos (19:00 - 07:00 que viram a meia-noite)
+ * - Múltiplos turnos / dobra / cobertura no mesmo dia após encerramento de saída anterior
  */
 export function determineNextPunch(
-  hojePunches: PontoEvento[],
-  colaborador: Colaborador
+  recentEvents: PontoEvento[],
+  colaborador: Colaborador,
+  referenceNow: Date = new Date()
 ): NextPunchInfo {
-  const count = hojePunches.length;
+  const cutoffMs = referenceNow.getTime() - 20 * 60 * 60 * 1000;
+  const sorted = [...recentEvents]
+    .filter((ev) => {
+      const ts = new Date(ev.serverTimestamp).getTime();
+      return Number.isFinite(ts) && ts >= cutoffMs && ts <= referenceNow.getTime() + 5 * 60 * 1000;
+    })
+    .sort((a, b) => new Date(a.serverTimestamp).getTime() - new Date(b.serverTimestamp).getTime());
 
-  if (count === 0) {
+  // Encontra o início do turno aberto mais recente (última 'entrada' após a última 'saida')
+  let lastSaidaIdx = -1;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (sorted[i].tipoEvento === 'saida') {
+      lastSaidaIdx = i;
+      break;
+    }
+  }
+
+  const currentShiftEvents = sorted.slice(lastSaidaIdx + 1);
+  const completedShiftsCount = sorted.filter((ev) => ev.tipoEvento === 'saida').length;
+
+  if (currentShiftEvents.length === 0) {
     return {
       tipo: 'entrada',
-      label: 'Entrada',
-      descricao: 'Início da jornada de trabalho no posto',
+      label: completedShiftsCount > 0 ? 'Entrada (Novo Turno / Extra)' : 'Entrada',
+      descricao:
+        completedShiftsCount > 0
+          ? 'Início de novo turno, cobertura ou hora extra no posto'
+          : 'Início da jornada de trabalho no posto',
       horarioPrevisto: colaborador.turnoInicio || '07:00',
       isComplete: false,
+      shiftIndex: completedShiftsCount + 1,
+      isOvernightOpen: false,
     };
   }
 
-  if (count === 1) {
+  const lastEvent = currentShiftEvents[currentShiftEvents.length - 1];
+  const entryDate = new Date(currentShiftEvents[0].serverTimestamp);
+  const isOvernightOpen =
+    entryDate.toISOString().slice(0, 10) !== referenceNow.toISOString().slice(0, 10);
+
+  if (lastEvent.tipoEvento === 'entrada') {
     return {
       tipo: 'saida_intervalo',
       label: 'Pausa Almoço / Janta',
-      descricao: 'Pausa para refeição e descanso',
+      descricao: 'Registro de saída para intervalo intrajornada',
       horarioPrevisto: '12:00',
       isComplete: false,
+      shiftIndex: completedShiftsCount + 1,
+      isOvernightOpen,
     };
   }
 
-  if (count === 2) {
+  if (lastEvent.tipoEvento === 'saida_intervalo') {
     return {
       tipo: 'retorno_intervalo',
       label: 'Retorno Almoço / Janta',
-      descricao: 'Reinício das atividades no posto',
+      descricao: 'Retorno do intervalo e retomada do posto',
       horarioPrevisto: '13:00',
       isComplete: false,
-    };
-  }
-
-  if (count === 3) {
-    return {
-      tipo: 'saida',
-      label: 'Saída',
-      descricao: 'Encerramento do turno e rendição',
-      horarioPrevisto: colaborador.turnoFim || '19:00',
-      isComplete: false,
+      shiftIndex: completedShiftsCount + 1,
+      isOvernightOpen,
     };
   }
 
   return {
     tipo: 'saida',
-    label: 'Turno Concluído',
-    descricao: 'Todas as batidas de ponto de hoje foram registradas',
-    horarioPrevisto: '--:--',
-    isComplete: true,
+    label: isOvernightOpen ? 'Saída (Fim de Turno Noturno)' : 'Saída',
+    descricao: 'Encerramento do turno e rendição no posto',
+    horarioPrevisto: colaborador.turnoFim || '19:00',
+    isComplete: false,
+    shiftIndex: completedShiftsCount + 1,
+    isOvernightOpen,
   };
 }
 
 /**
- * Recupera os eventos de ponto registrados para o colaborador
+ * Classifica o posto da batida comparando posto detectado, posto-base e coberturas vigentes.
  */
+export function resolvePunchClassification(
+  postoBaseId: string | null | undefined,
+  postoDetectadoId: string,
+  coberturasAtivas: CoberturaProgramada[],
+  referenceDate: Date = new Date()
+): { classificacao: ClassificacaoPosto; coverageAssignment?: CoberturaProgramada } {
+  const dateBR = new Intl.DateTimeFormat('fr-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(referenceDate);
+
+  const matchingCoverage = coberturasAtivas.find(
+    (c) =>
+      c.postoCoberturaId === postoDetectadoId &&
+      (c.status === 'aprovada' || c.status === 'em_andamento') &&
+      c.dataInicio <= dateBR &&
+      c.dataFim >= dateBR
+  );
+
+  if (postoBaseId && postoDetectadoId !== postoBaseId) {
+    if (matchingCoverage) {
+      return {
+        classificacao: matchingCoverage.tipo === 'extra' ? 'extra_programada' : 'cobertura_programada',
+        coverageAssignment: matchingCoverage,
+      };
+    }
+    return { classificacao: 'divergencia_posto' };
+  }
+
+  if (matchingCoverage && matchingCoverage.tipo === 'extra') {
+    return { classificacao: 'extra_programada', coverageAssignment: matchingCoverage };
+  }
+
+  return { classificacao: 'posto_regular' };
+}
+
+/**
+ * Gera chave idempotente determinística por tentativa (preservada entre retentativas)
+ */
+export function buildIdempotencyKey(
+  colaboradorId: string,
+  tipoEvento: TipoBatidaPonto,
+  attemptId: string
+): string {
+  return `tc-pe-${colaboradorId}-${tipoEvento}-${attemptId}`;
+}
+
 export function getPontoEventos(colaboradorId: string): PontoEvento[] {
   try {
+    if (typeof localStorage === 'undefined') return [];
     const raw = localStorage.getItem(PONTO_EVENTOS_LOCAL_KEY);
     if (!raw) return [];
     const all: PontoEvento[] = JSON.parse(raw);
@@ -334,6 +463,32 @@ export function getPontoEventos(colaboradorId: string): PontoEvento[] {
   }
 }
 
+export function getPendingPontoQueue(): PontoEvento[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(PONTO_SYNC_QUEUE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalEvento(evento: PontoEvento) {
+  if (typeof localStorage === 'undefined') return;
+  const raw = localStorage.getItem(PONTO_EVENTOS_LOCAL_KEY);
+  const all: PontoEvento[] = raw ? JSON.parse(raw) : [];
+  const filtered = all.filter((e) => e.idempotencyKey !== evento.idempotencyKey);
+  filtered.push(evento);
+  localStorage.setItem(PONTO_EVENTOS_LOCAL_KEY, JSON.stringify(filtered));
+}
+
+function enqueuePendingSync(evento: PontoEvento) {
+  if (typeof localStorage === 'undefined') return;
+  const queue = getPendingPontoQueue().filter((e) => e.idempotencyKey !== evento.idempotencyKey);
+  queue.push(evento);
+  localStorage.setItem(PONTO_SYNC_QUEUE_KEY, JSON.stringify(queue));
+}
+
 export interface RecordPontoResult {
   evento: PontoEvento;
   isSavedInDatabase: boolean;
@@ -343,10 +498,9 @@ export interface RecordPontoResult {
 }
 
 /**
- * Grava um novo evento de ponto com validação transacional e classificação precisa.
- * - NUNCA faz upsert nem altera colaboradores.condominio_id nem a escala permanente.
- * - Registra em outro posto válido como divergência ou cobertura programada, gerando alerta.
- * - Bloqueia somente se fora de todos os postos com confiança.
+ * Grava evento de ponto via RPC transacional registrar_ponto_transacional.
+ * - Nunca muta colaboradores.condominio_id nem escala permanente.
+ * - Nunca finge confirmação no servidor se o RPC falhar: marca pendente_sincronizacao.
  */
 export async function recordPontoEvento(
   colaborador: Colaborador,
@@ -356,31 +510,31 @@ export async function recordPontoEvento(
   credentialId?: string,
   metodo: 'biometria_facial' | 'biometria_passkey' | 'autenticador_dispositivo' | 'excecao_autorizada' = 'biometria_facial',
   motivoExcecao?: string,
-  fotoBiometriaUrl?: string
+  fotoBiometriaUrl?: string,
+  attemptId?: string
 ): Promise<RecordPontoResult> {
+  if (
+    (geoResult.geofenceStatus === 'fora_do_raio' ||
+      geoResult.geofenceStatus === 'inconclusivo' ||
+      geoResult.geofenceStatus === 'gps_indisponivel') &&
+    metodo !== 'excecao_autorizada'
+  ) {
+    throw new Error(
+      `Localização não validada (${geoResult.geofenceStatus}). Não é permitido confirmar batida sem perímetro validado ou exceção autorizada.`
+    );
+  }
+
   const now = new Date();
   const serverTimestamp = now.toISOString();
+  const resolvedAttemptId =
+    attemptId ||
+    (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
 
-  // Data em fuso America/Sao_Paulo
-  const dateKey = new Intl.DateTimeFormat('fr-CA', {
-    timeZone: 'America/Sao_Paulo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
-
-  const horaFormatada = new Intl.DateTimeFormat('pt-BR', {
-    timeZone: 'America/Sao_Paulo',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(now);
-
-  const cleanDate = dateKey.replace(/-/g, '');
-  const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-  const comprovanteNumero = `TC-${cleanDate}-${randomSuffix}`;
-
-  // Chave de idempotência compatível com múltiplos turnos e tolerância
-  const idempotencyKey = `tc-pe-${colaborador.id}-${cleanDate}-${tipoEvento}-${comprovanteNumero.slice(-4)}`;
+  const idempotencyKey = buildIdempotencyKey(colaborador.id, tipoEvento, resolvedAttemptId);
+  const detectedPosto = geoResult.detectedPosto || posto;
+  const supabase = getSupabase();
 
   const labelMap: Record<TipoBatidaPonto, string> = {
     entrada: 'Entrada registrada',
@@ -389,40 +543,58 @@ export async function recordPontoEvento(
     saida: 'Saída registrada',
   };
 
-  const detectedPosto = geoResult.detectedPosto || posto;
-  const isPostoPrincipal = detectedPosto.id === colaborador.condominioId;
+  let classificacao: ClassificacaoPosto =
+    geoResult.classificacaoPosto ||
+    (detectedPosto.id === colaborador.condominioId ? 'posto_regular' : 'divergencia_posto');
+  let coverageAssignmentId = geoResult.coverageAssignmentId;
 
-  const supabase = getSupabase();
-  let classificacao: ClassificacaoPosto = isPostoPrincipal ? 'posto_regular' : 'divergencia_posto';
-  let coverageAssignmentId: string | undefined = undefined;
-
-  // Consulta cobertura programada aprovada e vigente se o posto for diferente da lotação
-  if (!isPostoPrincipal && supabase) {
+  // Pré-consulta coberturas locais/remotas para fallback offline informativo
+  let coberturas: CoberturaProgramada[] = [];
+  if (supabase) {
     try {
-      const { data: cobs } = await supabase
+      const { data } = await supabase
         .from('coberturas_programadas')
         .select('*')
         .eq('colaborador_id', colaborador.id)
-        .eq('posto_destino_id', detectedPosto.id)
-        .eq('status', 'aprovada')
-        .lte('data_inicio', serverTimestamp)
-        .gte('data_fim', serverTimestamp)
-        .limit(1);
-
-      if (cobs && cobs.length > 0) {
-        coverageAssignmentId = cobs[0].id;
-        classificacao = cobs[0].tipo === 'extra' ? 'extra_programada' : 'cobertura_programada';
+        .in('status', ['aprovada', 'em_andamento']);
+      if (Array.isArray(data)) {
+        coberturas = data.map((row: Record<string, unknown>) => ({
+          id: String(row.id),
+          empresaId: String(row.empresa_id || ''),
+          colaboradorId: String(row.colaborador_id),
+          postoCoberturaId: String(row.posto_cobertura_id),
+          tipo: (row.tipo as CoberturaProgramada['tipo']) || 'cobertura',
+          dataInicio: String(row.data_inicio),
+          dataFim: String(row.data_fim),
+          horaInicio: String(row.hora_inicio || '07:00'),
+          horaFim: String(row.hora_fim || '19:00'),
+          status: (row.status as CoberturaProgramada['status']) || 'aprovada',
+          criadoEm: String(row.created_at || serverTimestamp),
+        }));
       }
     } catch {
-      // Mantém 'divergencia_posto' se falhar consulta
+      // RPC no servidor autoritativamente classifica cobertura mesmo se query falhar
     }
   }
+
+  const resolvedClass = resolvePunchClassification(colaborador.condominioId, detectedPosto.id, coberturas, now);
+  classificacao = resolvedClass.classificacao;
+  coverageAssignmentId = resolvedClass.coverageAssignment?.id;
 
   const isDivergencia = classificacao === 'divergencia_posto';
   const isCobertura = classificacao === 'cobertura_programada' || classificacao === 'extra_programada';
 
-  const newEvento: PontoEvento = {
-    id: `pe-${Date.now()}-${randomSuffix}`,
+  const comprovanteFallback = `TC-${new Intl.DateTimeFormat('fr-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+    .format(now)
+    .replace(/-/g, '')}-${resolvedAttemptId.slice(0, 6).toUpperCase()}`;
+
+  const evento: PontoEvento = {
+    id: `pe-${resolvedAttemptId}`,
     colaboradorId: colaborador.id,
     colaboradorNome: colaborador.nome,
     condominioId: detectedPosto.id,
@@ -432,7 +604,7 @@ export async function recordPontoEvento(
     labelEvento: isDivergencia
       ? `${labelMap[tipoEvento]} (Divergência de Posto)`
       : isCobertura
-      ? `${labelMap[tipoEvento]} (Cobertura Programada)`
+      ? `${labelMap[tipoEvento]} (${classificacao === 'extra_programada' ? 'Extra Programada' : 'Cobertura Programada'})`
       : labelMap[tipoEvento],
     serverTimestamp,
     latitude: geoResult.latitude,
@@ -445,20 +617,18 @@ export async function recordPontoEvento(
     credentialId,
     fotoBiometriaUrl,
     metodoAutenticacao: metodo,
-    verificationStatus: 'confirmado',
+    verificationStatus: 'pendente',
     classificacaoPosto: classificacao,
     postoBaseId: colaborador.condominioId || undefined,
     postoDetectadoId: detectedPosto.id,
     coverageAssignmentId,
     ambiguidadeDetectada: Boolean(geoResult.ambiguidadeDetectada),
     idempotencyKey,
-    comprovanteNumero,
+    comprovanteNumero: comprovanteFallback,
     motivoExcecao:
       motivoExcecao ||
       (isDivergencia
-        ? `Divergência de posto: Ponto batido no posto ${detectedPosto.nome} (Lotação cadastral: ${colaborador.postoNome || 'Matriz'})`
-        : isCobertura
-        ? `Cobertura programada autorizada: ${detectedPosto.nome}`
+        ? `Divergência de posto: ponto registrado em ${detectedPosto.nome} (lotação base: ${colaborador.postoNome || 'Matriz'})`
         : undefined),
     isCobertura: isCobertura || isDivergencia,
     postoOriginalId: colaborador.condominioId || undefined,
@@ -469,155 +639,141 @@ export async function recordPontoEvento(
     criadoEm: serverTimestamp,
   };
 
-  let isSavedInDatabase = false;
-  let offlinePending = false;
+  if (!supabase) {
+    enqueuePendingSync(evento);
+    saveLocalEvento(evento);
+    return {
+      evento,
+      isSavedInDatabase: false,
+      offlinePending: true,
+      isDuplicated: false,
+      message: 'Sem conexão com o servidor. Batida salva na fila local como Pendente de Sincronização.',
+    };
+  }
 
-  if (supabase) {
-    try {
-      // 1. Atualização / inserção da folha diária em 'pontos'
-      const { data: existingRows } = await supabase
-        .from('pontos')
-        .select('*')
-        .eq('colaborador_id', colaborador.id)
-        .eq('data', dateKey)
-        .limit(1);
+  try {
+    const deviceInfo =
+      typeof navigator !== 'undefined'
+        ? { userAgent: navigator.userAgent, platform: navigator.platform }
+        : {};
 
-      const existingPonto = existingRows && existingRows.length > 0 ? existingRows[0] : null;
+    const { data: rpcData, error: rpcErr } = await supabase.rpc('registrar_ponto_transacional', {
+      p_colaborador_id: colaborador.id,
+      p_tipo_evento: tipoEvento,
+      p_metodo_autenticacao: metodo,
+      p_idempotency_key: idempotencyKey,
+      p_latitude: geoResult.latitude ?? null,
+      p_longitude: geoResult.longitude ?? null,
+      p_accuracy_m: geoResult.accuracyRealM ?? geoResult.accuracyM ?? null,
+      p_posto_detectado_id: detectedPosto.id,
+      p_decisao_geofence: geoResult.decisaoGeofence || geoResult.geofenceStatus,
+      p_distance_m: geoResult.distanceM ?? null,
+      p_ambiguidade_detectada: Boolean(geoResult.ambiguidadeDetectada),
+      p_credential_id: credentialId ?? null,
+      p_foto_biometria_url: fotoBiometriaUrl ?? null,
+      p_motivo_excecao: evento.motivoExcecao ?? null,
+      p_device_info: deviceInfo,
+    });
 
-      if (existingPonto) {
-        const updates: Record<string, any> = {
-          updated_at: serverTimestamp,
-          localizacao_gps: `Posto ${detectedPosto.nome} (${geoResult.distanceM || 0}m, ${classificacao})`,
-          status_ponto: isDivergencia ? 'Divergente' : isCobertura ? 'Cobertura' : 'Regular',
-          status: isDivergencia ? 'Divergência' : isCobertura ? 'Cobertura' : 'Regular',
-        };
-
-        if (fotoBiometriaUrl) updates.foto_facial = fotoBiometriaUrl;
-        if (tipoEvento === 'entrada') updates.entrada_1 = horaFormatada;
-        else if (tipoEvento === 'saida_intervalo') updates.saida_1 = horaFormatada;
-        else if (tipoEvento === 'retorno_intervalo') updates.entrada_2 = horaFormatada;
-        else if (tipoEvento === 'saida') updates.saida_2 = horaFormatada;
-
-        const { error: updErr } = await supabase.from('pontos').update(updates).eq('id', existingPonto.id);
-        if (!updErr) isSavedInDatabase = true;
-      } else {
-        const newPontoRow = {
-          id: `ponto-${Date.now()}-${randomSuffix}`,
-          colaborador_id: colaborador.id,
-          colaborador_nome: colaborador.nome,
-          data: dateKey,
-          entrada_1: tipoEvento === 'entrada' ? horaFormatada : '07:00',
-          saida_1: tipoEvento === 'saida_intervalo' ? horaFormatada : null,
-          entrada_2: tipoEvento === 'retorno_intervalo' ? horaFormatada : null,
-          saida_2: tipoEvento === 'saida' ? horaFormatada : null,
-          total_horas: 'Em andamento',
-          status_ponto: isDivergencia ? 'Divergente' : isCobertura ? 'Cobertura' : 'Regular',
-          status: isDivergencia ? 'Divergência' : isCobertura ? 'Cobertura' : 'Regular',
-          localizacao_gps: `Posto ${detectedPosto.nome} (${geoResult.distanceM || 0}m, ${classificacao})`,
-          foto_facial: fotoBiometriaUrl || null,
-          created_at: serverTimestamp,
-          updated_at: serverTimestamp,
-        };
-
-        const { error: insErr } = await supabase.from('pontos').insert(newPontoRow);
-        if (!insErr) isSavedInDatabase = true;
-      }
-
-      // 2. Gravação do registro imutável em 'ponto_eventos'
-      const { error: peErr } = await supabase.from('ponto_eventos').insert({
-        id: newEvento.id,
-        colaborador_id: newEvento.colaboradorId,
-        condominio_id: detectedPosto.id,
-        posto_id: detectedPosto.id,
-        posto_nome: detectedPosto.nome,
-        condominio_nome: detectedPosto.nome,
-        posto_base_id: colaborador.condominioId || null,
-        posto_detectado_id: detectedPosto.id,
-        coverage_assignment_id: coverageAssignmentId || null,
-        classificacao_posto: classificacao,
-        tipo_evento: newEvento.tipoEvento,
-        server_timestamp: newEvento.serverTimestamp,
-        latitude: newEvento.latitude,
-        longitude: newEvento.longitude,
-        accuracy_m: newEvento.accuracyM,
-        accuracy_real_m: newEvento.accuracyRealM,
-        geofence_status: newEvento.geofenceStatus,
-        decisao_geofence: newEvento.decisaoGeofence,
-        distance_m: newEvento.distanceM,
-        ambiguidade_detectada: newEvento.ambiguidadeDetectada,
-        credential_id: newEvento.credentialId,
-        foto_biometria_url: newEvento.fotoBiometriaUrl,
-        metodo_autenticacao: newEvento.metodoAutenticacao,
-        verification_status: isSavedInDatabase ? 'confirmado' : 'pendente',
-        idempotency_key: newEvento.idempotencyKey,
-        comprovante_numero: newEvento.comprovanteNumero,
-        motivo_excecao: newEvento.motivoExcecao,
-      });
-
-      if (!peErr) isSavedInDatabase = true;
-
-      // 3. Se for divergência de posto, cria alerta persistido para supervisão/RH
-      if (isDivergencia) {
-        await supabase.from('alertas').insert({
-          id: `alerta-div-${Date.now()}`,
-          tipo: 'posto_divergente',
-          gravidade: 'moderada',
-          titulo: `Divergência de Posto: ${colaborador.nome}`,
-          descricao: `O colaborador ${colaborador.nome} registrou ponto no posto "${detectedPosto.nome}" sem cobertura prévia cadastrada. Lotação cadastral: "${colaborador.postoNome || 'Matriz'}". Distância apurada: ${geoResult.distanceM || 0}m.`,
-          posto_id: detectedPosto.id,
-          posto_nome: detectedPosto.nome,
-          colaborador_id: colaborador.id,
-          colaborador_nome: colaborador.nome,
-          horario: horaFormatada,
-          resolvido: false,
-          created_at: serverTimestamp,
-        });
-
-        // Cria notificação de sistema para supervisor/RH
-        await supabase.from('notificacoes_sistema').insert({
-          id: `notif-div-${Date.now()}`,
-          empresa_id: 'emp-matriz-principal',
-          destinatario_id: 'supervisor-geral',
-          destinatario_tipo: 'supervisor',
-          titulo: `Aviso de Divergência: ${colaborador.nome}`,
-          mensagem: `Ponto registrado no posto ${detectedPosto.nome} (lotação habitual: ${colaborador.postoNome || 'Matriz'}).`,
-          tipo: 'divergencia_ponto',
-          referencia_id: newEvento.id,
-          link_acao: 'operacao',
-          lida: false,
-          created_at: serverTimestamp,
-        });
-      }
-    } catch (err) {
-      console.warn('Falha de sincronização remota do ponto com o Supabase:', err);
-      offlinePending = true;
+    if (rpcErr || !rpcData) {
+      throw rpcErr || new Error('Resposta vazia da RPC registrar_ponto_transacional');
     }
-  } else {
-    isSavedInDatabase = true;
-    offlinePending = false;
+
+    const resObj = rpcData as Record<string, unknown>;
+    evento.id = String(resObj.evento_id || evento.id);
+    evento.comprovanteNumero = String(resObj.comprovante_numero || evento.comprovanteNumero);
+    evento.serverTimestamp = String(resObj.server_timestamp || evento.serverTimestamp);
+    evento.classificacaoPosto = (resObj.classificacao_posto as ClassificacaoPosto) || classificacao;
+    evento.coverageAssignmentId = resObj.coverage_assignment_id
+      ? String(resObj.coverage_assignment_id)
+      : coverageAssignmentId;
+    evento.verificationStatus = 'confirmado';
+
+    const finalDivergencia = evento.classificacaoPosto === 'divergencia_posto';
+    const finalCobertura =
+      evento.classificacaoPosto === 'cobertura_programada' ||
+      evento.classificacaoPosto === 'extra_programada';
+    evento.isCobertura = finalDivergencia || finalCobertura;
+    evento.labelEvento = finalDivergencia
+      ? `${labelMap[tipoEvento]} (Divergência de Posto)`
+      : finalCobertura
+      ? `${labelMap[tipoEvento]} (${evento.classificacaoPosto === 'extra_programada' ? 'Extra Programada' : 'Cobertura Programada'})`
+      : labelMap[tipoEvento];
+
+    saveLocalEvento(evento);
+
+    return {
+      evento,
+      isSavedInDatabase: true,
+      offlinePending: false,
+      isDuplicated: Boolean(resObj.duplicado),
+      message: resObj.duplicado
+        ? 'Batida idempotente já registrada anteriormente no servidor.'
+        : finalDivergencia
+        ? `Ponto confirmado em "${detectedPosto.nome}". Divergência de posto registrada e supervisão notificada (seu posto-base permanece inalterado).`
+        : finalCobertura
+        ? `Ponto confirmado como ${evento.classificacaoPosto === 'extra_programada' ? 'Extra Programada' : 'Cobertura Programada'} em "${detectedPosto.nome}".`
+        : 'Ponto registrado e confirmado transacionalmente no servidor.',
+    };
+  } catch (err) {
+    console.warn('Falha ao gravar ponto no Supabase; mantendo pendente para reenvio:', err);
+    evento.verificationStatus = 'pendente';
+    enqueuePendingSync(evento);
+    saveLocalEvento(evento);
+    return {
+      evento,
+      isSavedInDatabase: false,
+      offlinePending: true,
+      isDuplicated: false,
+      message: 'Falha de rede ao gravar no servidor. Registro salvo em fila pendente de sincronização.',
+    };
+  }
+}
+
+/**
+ * Reenvia eventos pendentes preservando idempotencyKey original.
+ */
+export async function syncPendingPontoEventos(): Promise<{ synced: number; remaining: number }> {
+  const supabase = getSupabase();
+  const queue = getPendingPontoQueue();
+  if (!supabase || queue.length === 0) {
+    return { synced: 0, remaining: queue.length };
   }
 
-  if (offlinePending) {
-    newEvento.verificationStatus = 'pendente';
+  let synced = 0;
+  const remaining: PontoEvento[] = [];
+
+  for (const item of queue) {
+    try {
+      const { data, error } = await supabase.rpc('registrar_ponto_transacional', {
+        p_colaborador_id: item.colaboradorId,
+        p_tipo_evento: item.tipoEvento,
+        p_metodo_autenticacao: item.metodoAutenticacao,
+        p_idempotency_key: item.idempotencyKey,
+        p_latitude: item.latitude ?? null,
+        p_longitude: item.longitude ?? null,
+        p_accuracy_m: item.accuracyRealM ?? item.accuracyM ?? null,
+        p_posto_detectado_id: item.postoDetectadoId ?? item.condominioId ?? null,
+        p_decisao_geofence: item.decisaoGeofence || item.geofenceStatus,
+        p_distance_m: item.distanceM ?? null,
+        p_ambiguidade_detectada: Boolean(item.ambiguidadeDetectada),
+        p_credential_id: item.credentialId ?? null,
+        p_foto_biometria_url: item.fotoBiometriaUrl ?? null,
+        p_motivo_excecao: item.motivoExcecao ?? null,
+        p_device_info: { syncedFromQueue: true },
+      });
+      if (error || !data) throw error || new Error('Erro RPC');
+      item.verificationStatus = 'confirmado';
+      saveLocalEvento(item);
+      synced++;
+    } catch {
+      remaining.push(item);
+    }
   }
 
-  // Persistência local no navegador (fila de auditoria)
-  const raw = localStorage.getItem(PONTO_EVENTOS_LOCAL_KEY);
-  const all: PontoEvento[] = raw ? JSON.parse(raw) : [];
-  all.push(newEvento);
-  localStorage.setItem(PONTO_EVENTOS_LOCAL_KEY, JSON.stringify(all));
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(PONTO_SYNC_QUEUE_KEY, JSON.stringify(remaining));
+  }
 
-  return {
-    evento: newEvento,
-    isSavedInDatabase,
-    offlinePending,
-    isDuplicated: false,
-    message: isSavedInDatabase
-      ? isDivergencia
-        ? `Ponto registrado com sucesso no posto "${detectedPosto.nome}". Notificação de divergência enviada à supervisão.`
-        : isCobertura
-        ? `Ponto registrado com sucesso como Cobertura Programada no posto "${detectedPosto.nome}".`
-        : 'Ponto registrado e confirmado no servidor com sucesso.'
-      : 'Ponto gravado localmente (Pendente de Sincronização com o Servidor).',
-  };
+  return { synced, remaining: remaining.length };
 }

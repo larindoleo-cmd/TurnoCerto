@@ -1,7 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import {
   TabType,
-  StatusColaborador,
   CondominioPosto,
   Colaborador,
   AlertaOperacional,
@@ -13,19 +12,16 @@ import {
   EmpresaInfo,
   UsuarioAuth,
   SolicitacaoBiometriaFacial,
+  CoberturaProgramada,
+  DocumentoSolicitacao,
+  ColaboradorDocumento,
+  DocumentoHistorico,
+  HoleriteLote,
+  HoleriteEvento,
+  NotificacaoSistema,
+  SolicitacaoCorrecaoPonto,
+  PontoEvento,
 } from '../types';
-import {
-  INITIAL_CONDOMINIOS,
-  INITIAL_COLABORADORES,
-  INITIAL_ALERTAS,
-  INITIAL_OCORRENCIAS,
-  INITIAL_HOLERITES,
-  INITIAL_PONTO_REGISTROS,
-  INITIAL_ATESTADOS,
-  INITIAL_EMPRESA_INFO,
-  DEFAULT_USER,
-  ADMIN_CAETANO_USER,
-} from '../data/mockData';
 import { getSupabase } from '../lib/supabase';
 import {
   getLocalSolicitacoesBiometria,
@@ -36,10 +32,28 @@ import {
   getActiveBiometriaAuthorization as getActiveBiometriaService,
   getUltimaSolicitacaoColaborador as getUltimaBiometriaService,
 } from '../services/facialRecognitionService';
+import {
+  DEFAULT_MAX_ACCURACY_THRESHOLD_M,
+  syncPendingPontoEventos,
+} from '../services/pontoService';
+import {
+  fetchCoberturas,
+  criarCoberturaProgramada,
+  responderAceiteCobertura,
+  atualizarStatusCobertura,
+  CriarCoberturaInput,
+} from '../services/escalaCoberturaService';
+import {
+  fetchDocumentoSolicitacoes,
+  fetchColaboradorDocumentos,
+  fetchDocumentoHistorico,
+} from '../services/documentWorkflowService';
+import {
+  fetchHoleriteLotes,
+  fetchHoleriteEventos,
+  mapHoleriteRow,
+} from '../services/holeriteWorkflowService';
 
-
-
-// Helper to generate RFC4122 v4 UUID or unique safe ID
 function generateSafeId(prefix = 'tc'): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -47,11 +61,34 @@ function generateSafeId(prefix = 'tc'): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
 }
 
-// Helper to check valid UUID
 function isValidUUID(str?: string | null): boolean {
   if (!str) return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
 }
+
+const EMPTY_EMPRESA_INFO: EmpresaInfo = {
+  id: 'emp-matriz-principal',
+  razaoSocial: 'TurnoCerto Gestão Operacional',
+  nomeFantasia: 'TurnoCerto',
+  cnpj: '',
+  inscricaoEstadual: '',
+  inscricaoMunicipal: '',
+  telefone: '',
+  whatsapp: '',
+  email: '',
+  endereco: '',
+  bairro: '',
+  cidade: '',
+  estado: '',
+  cep: '',
+  responsavelOperacional: '',
+  cargoResponsavel: '',
+  chavePix: '',
+  logoUrl: '',
+  apresentacao: '',
+  maxGpsAccuracyM: DEFAULT_MAX_ACCURACY_THRESHOLD_M,
+  exigeAceiteCobertura: false,
+};
 
 interface AppContextType {
   activeTab: TabType;
@@ -63,8 +100,25 @@ interface AppContextType {
   alertas: AlertaOperacional[];
   ocorrencias: Ocorrencia[];
   holerites: HoleriteRegistro[];
+  setHolerites: React.Dispatch<React.SetStateAction<HoleriteRegistro[]>>;
   pontos: PontoRegistro[];
+  pontoEventos: PontoEvento[];
+  setPontoEventos: React.Dispatch<React.SetStateAction<PontoEvento[]>>;
   atestados: AtestadoMedico[];
+  coberturasProgramadas: CoberturaProgramada[];
+  setCoberturasProgramadas: React.Dispatch<React.SetStateAction<CoberturaProgramada[]>>;
+  documentoSolicitacoes: DocumentoSolicitacao[];
+  setDocumentoSolicitacoes: React.Dispatch<React.SetStateAction<DocumentoSolicitacao[]>>;
+  colaboradorDocumentos: ColaboradorDocumento[];
+  setColaboradorDocumentos: React.Dispatch<React.SetStateAction<ColaboradorDocumento[]>>;
+  documentoHistorico: DocumentoHistorico[];
+  holeriteLotes: HoleriteLote[];
+  setHoleriteLotes: React.Dispatch<React.SetStateAction<HoleriteLote[]>>;
+  holeriteEventos: HoleriteEvento[];
+  notificacoesSistema: NotificacaoSistema[];
+  setNotificacoesSistema: React.Dispatch<React.SetStateAction<NotificacaoSistema[]>>;
+  solicitacoesCorrecao: SolicitacaoCorrecaoPonto[];
+  setSolicitacoesCorrecao: React.Dispatch<React.SetStateAction<SolicitacaoCorrecaoPonto[]>>;
   cadastroModalOpen: boolean;
   setCadastroModalOpen: (open: boolean) => void;
 
@@ -81,8 +135,13 @@ interface AppContextType {
   openPosto360: (posto: CondominioPosto | string) => void;
   closePosto360: () => void;
 
-  substituicaoModal: { isOpen: boolean; posto?: CondominioPosto; colaboradorFalta?: Colaborador } | null;
-  openSubstituicaoModal: (posto?: CondominioPosto, colaboradorFalta?: Colaborador) => void;
+  substituicaoModal: {
+    isOpen: boolean;
+    posto?: CondominioPosto;
+    colaboradorFalta?: Colaborador;
+    alertaId?: string;
+  } | null;
+  openSubstituicaoModal: (posto?: CondominioPosto, colaboradorFalta?: Colaborador, alertaId?: string) => void;
   closeSubstituicaoModal: () => void;
 
   alocarModal: { isOpen: boolean; posto?: CondominioPosto } | null;
@@ -130,7 +189,19 @@ interface AppContextType {
   excluirCondominio: (id: string) => Promise<boolean>;
 
   // Ações Operacionais com Persistência
-  substituirColaborador: (postoId: string, substitutoId: string, colaboradorFaltaId?: string) => Promise<boolean>;
+  substituirColaborador: (
+    postoId: string,
+    substitutoId: string,
+    colaboradorFaltaId?: string,
+    options?: {
+      dataInicio?: string;
+      dataFim?: string;
+      horaInicio?: string;
+      horaFim?: string;
+      motivo?: string;
+      alertaId?: string;
+    }
+  ) => Promise<boolean>;
   alocarColaborador: (postoId: string, colaboradorId: string, jornada: string) => Promise<boolean>;
   removerColaboradorDoPosto: (colaboradorId: string) => Promise<boolean>;
   resolverAlerta: (alertaId: string) => Promise<boolean>;
@@ -151,8 +222,24 @@ interface AppContextType {
     postoCadastrado: CondominioPosto,
     postoDetectado: CondominioPosto,
     distanciaM: number,
-    coords?: { latitude: number; longitude: number }
+    coords?: { latitude: number; longitude: number },
+    isProgramada?: boolean
   ) => Promise<void>;
+  alertarPostoSemCoordenadas: (postosSemCoords: CondominioPosto[]) => Promise<void>;
+
+  // Coberturas e Notificações
+  criarCobertura: (input: Omit<CriarCoberturaInput, 'empresaId' | 'criadoPorNome'>) => Promise<{ success: boolean; message: string }>;
+  responderCobertura: (cobertura: CoberturaProgramada, aceitar: boolean, motivoRecusa?: string) => Promise<{ success: boolean; message: string }>;
+  alterarStatusCobertura: (cobertura: CoberturaProgramada, novoStatus: 'cancelada' | 'concluida' | 'aprovada', detalhes?: string) => Promise<{ success: boolean; message: string }>;
+  marcarNotificacaoLida: (notificacaoId: string) => Promise<void>;
+  registrarSolicitacaoCorrecao: (dados: {
+    colaboradorId: string;
+    colaboradorNome: string;
+    dataPonto: string;
+    tipoCorrecao: SolicitacaoCorrecaoPonto['tipoCorrecao'];
+    justificativa: string;
+  }) => Promise<{ success: boolean; message: string }>;
+  revisarSolicitacaoCorrecao: (id: string, status: 'aprovado' | 'rejeitado', respostaRH: string) => Promise<boolean>;
 
   // Feedback toast
   toastMessage: string | null;
@@ -161,17 +248,18 @@ interface AppContextType {
   // Supabase sync
   syncWithSupabase: () => Promise<void>;
   isSyncing: boolean;
+  authLoading: boolean;
 
   // Sessão e Autenticação
   currentUser: UsuarioAuth | null;
   setCurrentUser: (user: UsuarioAuth | null) => void;
   login: (emailOrCpf: string, senhaDigitada: string) => Promise<{ success: boolean; message: string }>;
-  logout: () => void;
+  logout: () => Promise<void>;
   trocarSenhaModalOpen: boolean;
   setTrocarSenhaModalOpen: (open: boolean) => void;
   trocarSenha: (senhaAtual: string, novaSenha: string) => Promise<{ success: boolean; message: string }>;
 
-  // Gestão de Senha do Colaborador (Supervisor & Ajuda com Acesso)
+  // Gestão de Senha do Colaborador
   redefinirSenhaModalOpen: boolean;
   setRedefinirSenhaModalOpen: (open: boolean) => void;
   colaboradorParaRedefinirSenha: Colaborador | null;
@@ -181,7 +269,7 @@ interface AppContextType {
     colaboradorId: string,
     novaSenha: string,
     supervisor?: { id: string; nome: string }
-  ) => Promise<{ success: boolean; message: string; novaSenhaGerada?: string }>;
+  ) => Promise<{ success: boolean; message: string }>;
   solicitarAjudaSenha: (
     identificador: string,
     contatoTelefone?: string,
@@ -213,163 +301,33 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const LOCAL_STORAGE_KEY = 'turnocerto_app_data_v3';
-
-// Helper para detectar e descartar IDs fictícios de sementes legadas
-const isMockId = (id: string | null | undefined): boolean => {
-  if (!id) return false;
-  return (
-    /^cond-[0-9]+$/.test(id) ||
-    /^colab-[0-9]+$/.test(id) ||
-    id === 'colab-falta-1' ||
-    id === 'colab-afastado-1' ||
-    id.startsWith('colab-reserva') ||
-    /^alerta-[0-9]+$/.test(id) ||
-    id === 'alert-init-1' ||
-    /^ocorr-[0-9]+$/.test(id) ||
-    id === 'ocorr-init-1' ||
-    /^hol-[0-9]+$/.test(id) ||
-    /^pto-[0-9]+$/.test(id) ||
-    /^atest-[0-9]+$/.test(id) ||
-    id.startsWith('c21111') ||
-    id.startsWith('c31111') ||
-    id.startsWith('c41111') ||
-    id.startsWith('c51111') ||
-    id.startsWith('c61111') ||
-    id.startsWith('c22222') ||
-    id.startsWith('c33333') ||
-    id.startsWith('c44444')
-  );
-};
-
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<TabType>('operacao');
   const [selectedCondominioId, setSelectedCondominioId] = useState<string>('todos');
 
-  // Inicializa estado apenas com dados reais ou vazio
-  const [condominios, setCondominios] = useState<CondominioPosto[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_condominios`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return Array.isArray(parsed) ? parsed.filter((c: CondominioPosto) => !isMockId(c.id)) : [];
-      }
-      return INITIAL_CONDOMINIOS;
-    } catch {
-      return INITIAL_CONDOMINIOS;
-    }
-  });
+  const [condominios, setCondominios] = useState<CondominioPosto[]>([]);
+  const [colaboradores, setColaboradores] = useState<Colaborador[]>([]);
+  const [alertas, setAlertas] = useState<AlertaOperacional[]>([]);
+  const [ocorrencias, setOcorrencias] = useState<Ocorrencia[]>([]);
+  const [holerites, setHolerites] = useState<HoleriteRegistro[]>([]);
+  const [pontos, setPontos] = useState<PontoRegistro[]>([]);
+  const [pontoEventos, setPontoEventos] = useState<PontoEvento[]>([]);
+  const [atestados, setAtestados] = useState<AtestadoMedico[]>([]);
+  const [empresaInfo, setEmpresaInfo] = useState<EmpresaInfo>(EMPTY_EMPRESA_INFO);
 
-  const [colaboradores, setColaboradores] = useState<Colaborador[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_colaboradores`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return Array.isArray(parsed) ? parsed.filter((c: Colaborador) => !isMockId(c.id)) : [];
-      }
-      return INITIAL_COLABORADORES;
-    } catch {
-      return INITIAL_COLABORADORES;
-    }
-  });
-
-  const [alertas, setAlertas] = useState<AlertaOperacional[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_alertas`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return Array.isArray(parsed) ? parsed.filter((a: AlertaOperacional) => !isMockId(a.id)) : [];
-      }
-      return INITIAL_ALERTAS;
-    } catch {
-      return INITIAL_ALERTAS;
-    }
-  });
-
-  const [ocorrencias, setOcorrencias] = useState<Ocorrencia[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_ocorrencias`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return Array.isArray(parsed) ? parsed.filter((o: Ocorrencia) => !isMockId(o.id)) : [];
-      }
-      return INITIAL_OCORRENCIAS;
-    } catch {
-      return INITIAL_OCORRENCIAS;
-    }
-  });
-
-  const [holerites, setHolerites] = useState<HoleriteRegistro[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_holerites`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return Array.isArray(parsed) ? parsed.filter((h: HoleriteRegistro) => !isMockId(h.id)) : [];
-      }
-      return INITIAL_HOLERITES;
-    } catch {
-      return INITIAL_HOLERITES;
-    }
-  });
-
-  const [pontos, setPontos] = useState<PontoRegistro[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_pontos`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return Array.isArray(parsed) ? parsed.filter((p: PontoRegistro) => !isMockId(p.id)) : [];
-      }
-      return INITIAL_PONTO_REGISTROS;
-    } catch {
-      return INITIAL_PONTO_REGISTROS;
-    }
-  });
-
-  const [atestados, setAtestados] = useState<AtestadoMedico[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_atestados`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return Array.isArray(parsed) ? parsed.filter((a: AtestadoMedico) => !isMockId(a.id)) : [];
-      }
-      return INITIAL_ATESTADOS;
-    } catch {
-      return INITIAL_ATESTADOS;
-    }
-  });
-
-  const [empresaInfo, setEmpresaInfo] = useState<EmpresaInfo>(() => {
-    try {
-      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_empresa`);
-      return saved ? JSON.parse(saved) : INITIAL_EMPRESA_INFO;
-    } catch {
-      return INITIAL_EMPRESA_INFO;
-    }
-  });
+  const [coberturasProgramadas, setCoberturasProgramadas] = useState<CoberturaProgramada[]>([]);
+  const [documentoSolicitacoes, setDocumentoSolicitacoes] = useState<DocumentoSolicitacao[]>([]);
+  const [colaboradorDocumentos, setColaboradorDocumentos] = useState<ColaboradorDocumento[]>([]);
+  const [documentoHistorico, setDocumentoHistorico] = useState<DocumentoHistorico[]>([]);
+  const [holeriteLotes, setHoleriteLotes] = useState<HoleriteLote[]>([]);
+  const [holeriteEventos, setHoleriteEventos] = useState<HoleriteEvento[]>([]);
+  const [notificacoesSistema, setNotificacoesSistema] = useState<NotificacaoSistema[]>([]);
+  const [solicitacoesCorrecao, setSolicitacoesCorrecao] = useState<SolicitacaoCorrecaoPonto[]>([]);
 
   const [solicitacoesBiometria, setSolicitacoesBiometria] = useState<SolicitacaoBiometriaFacial[]>(() => {
     try {
       const stored = getLocalSolicitacoesBiometria();
-      if (stored && stored.length > 0) return stored;
-      const initial: SolicitacaoBiometriaFacial[] = [
-        {
-          id: 'sbf-init-101',
-          colaboradorId: 'colab-carlos-1042',
-          colaboradorNome: 'Carlos Eduardo Santos',
-          colaboradorMatricula: 'TC-1042',
-          colaboradorFuncao: 'Porteiro',
-          condominioId: 'cond-alvorada-01',
-          condominioNome: 'Residencial Alvorada',
-          postoNome: 'Portaria Principal',
-          fotoPerfil: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&auto=format&fit=crop&q=80',
-          tipoSolicitacao: 'primeiro_cadastro',
-          motivo: 'Primeiro cadastro de biometria facial para controle de ponto digital.',
-          status: 'pendente',
-          criadoEm: '2026-11-10T10:30:00.000Z',
-        },
-      ];
-      saveLocalSolicitacoesBiometria(initial);
-      return initial;
+      return Array.isArray(stored) ? stored.filter((s) => s.id !== 'sbf-init-101') : [];
     } catch {
       return [];
     }
@@ -386,6 +344,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     isOpen: boolean;
     posto?: CondominioPosto;
     colaboradorFalta?: Colaborador;
+    alertaId?: string;
   } | null>(null);
   const [alocarModal, setAlocarModal] = useState<{ isOpen: boolean; posto?: CondominioPosto } | null>(null);
   const [escalaModal, setEscalaModal] = useState<{ isOpen: boolean; posto?: CondominioPosto } | null>(null);
@@ -406,15 +365,89 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [colaboradorParaRedefinirSenha, setColaboradorParaRedefinirSenha] = useState<Colaborador | null>(null);
   const [ajudaAcessoModalOpen, setAjudaAcessoModalOpen] = useState(false);
 
-  // Toast feedback
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Authenticated user - Fonte única: Supabase Auth (Strict Zero-Trust)
+  // Authenticated user - Fonte única: Supabase Auth (Zero-Trust)
   const [currentUser, setCurrentUser] = useState<UsuarioAuth | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
 
-  // Sincronização em tempo real com a sessão do Supabase Auth
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((current) => (current === msg ? null : current));
+    }, 4500);
+  }, []);
+
+  const syncSessionUser = useCallback(async (user: any) => {
+    const supabase = getSupabase();
+    if (!user || !supabase) {
+      setCurrentUser(null);
+      setAuthLoading(false);
+      return;
+    }
+
+    try {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .or(`auth_user_id.eq.${user.id},id.eq.${user.id}`)
+        .maybeSingle();
+
+      const { data: colabByAuth } = await supabase
+        .from('colaboradores')
+        .select('*')
+        .eq('auth_user_id', user.id)
+        .maybeSingle();
+
+      const colabId = profile?.colaborador_id || colabByAuth?.id || undefined;
+      let colabData = colabByAuth;
+
+      if (!colabData && profile?.colaborador_id) {
+        const { data: cRow } = await supabase
+          .from('colaboradores')
+          .select('*')
+          .eq('id', profile.colaborador_id)
+          .maybeSingle();
+        colabData = cRow;
+      }
+
+      const role = (profile?.role || colabData?.role || user.app_metadata?.role || 'funcionario') as UsuarioAuth['role'];
+      const nome = colabData?.nome || profile?.full_name || profile?.nome || user.user_metadata?.full_name || user.email?.split('@')[0] || 'Usuário';
+      const cargo =
+        colabData?.funcao ||
+        profile?.cargo ||
+        (role === 'admin'
+          ? 'Administrador Geral'
+          : role === 'supervisor'
+          ? 'Supervisor Operacional'
+          : role === 'rh'
+          ? 'Recursos Humanos'
+          : 'Colaborador');
+
+      const authUser: UsuarioAuth = {
+        id: user.id,
+        nome,
+        email: user.email || '',
+        role,
+        cargo,
+        colaboradorId: colabId,
+        avatarUrl: colabData?.foto_url || profile?.foto_url || user.user_metadata?.avatar_url,
+        postoNome: colabData?.posto_nome || profile?.posto_nome,
+      };
+
+      setCurrentUser(authUser);
+      if (role === 'rh') {
+        setActiveTab('rh');
+      }
+    } catch (err) {
+      console.warn('Erro ao carregar perfil autenticado do Supabase:', err);
+      setCurrentUser(null);
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const supabase = getSupabase();
     if (!supabase) {
@@ -423,77 +456,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return;
     }
 
-    const syncSessionUser = async (user: any) => {
-      if (!user) {
-        setCurrentUser(null);
-        setAuthLoading(false);
-        return;
-      }
-
-      try {
-        // Busca perfil estritamente pelo auth_user_id ou id correspondente ao auth.uid()
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .or(`auth_user_id.eq.${user.id},id.eq.${user.id}`)
-          .maybeSingle();
-
-        let colabNome = profile?.full_name || profile?.nome || user.user_metadata?.full_name || user.email?.split('@')[0] || 'Usuário';
-        let colabCargo = profile?.cargo;
-        let colabPosto = profile?.posto_nome;
-        let colabFoto = profile?.foto_url || user.user_metadata?.avatar_url;
-
-        if (profile?.colaborador_id) {
-          const { data: colab } = await supabase
-            .from('colaboradores')
-            .select('*')
-            .eq('id', profile.colaborador_id)
-            .maybeSingle();
-          if (colab) {
-            colabNome = colab.nome || colabNome;
-            colabCargo = colab.funcao || colabCargo;
-            colabPosto = colab.postoNome || colab.posto_nome || colabPosto;
-            colabFoto = colab.foto || colab.foto_url || colabFoto;
-          }
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => {
+        if (session?.user) {
+          syncSessionUser(session.user);
+        } else {
+          setCurrentUser(null);
+          setAuthLoading(false);
         }
-
-        // Papel determinado exclusivamente pelo perfil no banco de dados (profile.role)
-        const role = profile?.role || user.app_metadata?.role || 'funcionario';
-
-        const authUser: UsuarioAuth = {
-          id: user.id,
-          nome: colabNome,
-          email: user.email || '',
-          role: role as any,
-          cargo: colabCargo || (role === 'admin' ? 'Administrador Geral' : role === 'supervisor' ? 'Supervisor Operacional' : role === 'rh' ? 'Recursos Humanos' : 'Colaborador'),
-          colaboradorId: profile?.colaborador_id || undefined,
-          avatarUrl: colabFoto,
-          postoNome: colabPosto,
-        };
-
-        setCurrentUser(authUser);
-      } catch (err) {
-        console.warn('Erro ao carregar perfil autenticado do Supabase:', err);
-        setCurrentUser(null);
-      } finally {
-        setAuthLoading(false);
-      }
-    };
-
-    // 1. Carrega sessão ativa
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        syncSessionUser(session.user);
-      } else {
+      })
+      .catch(() => {
         setCurrentUser(null);
         setAuthLoading(false);
-      }
-    }).catch(() => {
-      setCurrentUser(null);
-      setAuthLoading(false);
-    });
+      });
 
-    // 2. Escuta eventos do Supabase Auth
     const { data: authSub } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
         if (session?.user) {
@@ -508,68 +485,352 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return () => {
       authSub.subscription.unsubscribe();
     };
-  }, []);
+  }, [syncSessionUser]);
 
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage((current) => (current === msg ? null : current));
-    }, 4500);
-  };
-
-  // Persist state to localStorage for offline resilience
-  useEffect(() => {
-    localStorage.setItem(`${LOCAL_STORAGE_KEY}_condominios`, JSON.stringify(condominios));
-  }, [condominios]);
-
-  useEffect(() => {
-    localStorage.setItem(`${LOCAL_STORAGE_KEY}_colaboradores`, JSON.stringify(colaboradores));
-  }, [colaboradores]);
-
-  useEffect(() => {
-    localStorage.setItem(`${LOCAL_STORAGE_KEY}_alertas`, JSON.stringify(alertas));
-  }, [alertas]);
-
-  useEffect(() => {
-    localStorage.setItem(`${LOCAL_STORAGE_KEY}_ocorrencias`, JSON.stringify(ocorrencias));
-  }, [ocorrencias]);
-
-  useEffect(() => {
-    localStorage.setItem(`${LOCAL_STORAGE_KEY}_holerites`, JSON.stringify(holerites));
-  }, [holerites]);
-
-  useEffect(() => {
-    localStorage.setItem(`${LOCAL_STORAGE_KEY}_pontos`, JSON.stringify(pontos));
-  }, [pontos]);
-
-  useEffect(() => {
-    localStorage.setItem(`${LOCAL_STORAGE_KEY}_atestados`, JSON.stringify(atestados));
-  }, [atestados]);
-
-  useEffect(() => {
-    localStorage.setItem(`${LOCAL_STORAGE_KEY}_empresa`, JSON.stringify(empresaInfo));
-  }, [empresaInfo]);
-
-  useEffect(() => {
-    if (currentUser) {
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_user`, JSON.stringify(currentUser));
-    } else {
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_user`, 'null');
-    }
-  }, [currentUser]);
-
-  // Keep selectedPostoFor360 fresh when condominios updates
   useEffect(() => {
     if (selectedPostoFor360) {
       const updated = condominios.find((c) => c.id === selectedPostoFor360.id);
       if (updated) setSelectedPostoFor360(updated);
     }
-  }, [condominios]);
+  }, [condominios, selectedPostoFor360]);
 
-  // Initial bi-directional sync on mount
+  // Sincronização Bidirecional Completa com Supabase (executa quando há sessão ativa)
+  const syncWithSupabase = useCallback(async () => {
+    const client = getSupabase();
+    if (!client || !currentUser) {
+      return;
+    }
+
+    setIsSyncing(true);
+    try {
+      // Reenvia pontos offline pendentes com idempotência
+      await syncPendingPontoEventos();
+
+      // 1. Condomínios / Postos
+      const { data: remoteCondos } = await client.from('condominios').select('*').order('nome');
+      const condoMap = new Map<string, string>();
+      if (Array.isArray(remoteCondos)) {
+        const mappedCondos: CondominioPosto[] = remoteCondos.map((rc: any) => {
+          condoMap.set(rc.id, rc.nome || 'Posto');
+          return {
+            id: rc.id,
+            nome: rc.nome || 'Posto Sem Nome',
+            tipo: rc.tipo || 'Residencial',
+            cnpj: rc.cnpj || '',
+            contratoNumero: rc.contrato_numero || '',
+            endereco: rc.endereco || '',
+            bairro: rc.bairro || '',
+            cidade: rc.cidade || '',
+            supervisor: rc.supervisor || '',
+            telefoneSupervisor: rc.telefone_supervisor || '',
+            vagasContratadas: Number(rc.vagas_contratadas) || 2,
+            status: (rc.status as CondominioPosto['status']) || 'operacional',
+            motivoAtencao: rc.motivo_atencao || undefined,
+            tipoEscalaPadrao: rc.tipo_escala_padrao || '12x36 (07:00 - 19:00)',
+            plantaoAtual: {
+              operandoAgora: [],
+              proximaRendicao: { colaboradorId: '', horarioTroca: '19:00' },
+            },
+            coberturaPercentual: Number(rc.cobertura_percentual ?? 100),
+            contatoSindico: rc.contato_sindico || '',
+            telefoneSindico: rc.telefone_sindico || '',
+            instrucoesGuarita: rc.instrucoes_guarita || '',
+            foto: rc.foto_url || undefined,
+            ativo: rc.ativo !== false,
+            latitude: rc.latitude !== null && rc.latitude !== undefined ? Number(rc.latitude) : rc.lat !== null && rc.lat !== undefined ? Number(rc.lat) : undefined,
+            longitude: rc.longitude !== null && rc.longitude !== undefined ? Number(rc.longitude) : rc.lng !== null && rc.lng !== undefined ? Number(rc.lng) : undefined,
+            raioGpsMetros: Number(rc.raio_gps_metros || rc.raio_tolerancia_metros || 150),
+            icone: rc.icone || 'Building2',
+            cor: rc.cor || '#3B82F6',
+          };
+        });
+        setCondominios(mappedCondos);
+      }
+
+      // 2. Colaboradores (sem expor senha)
+      const { data: remoteColabs } = await client.from('colaboradores').select('*').order('nome');
+      if (Array.isArray(remoteColabs)) {
+        setColaboradores(
+          remoteColabs.map((rc: any) => ({
+            id: rc.id,
+            nome: rc.nome || rc.full_name || 'Colaborador',
+            matricula: rc.matricula || `TC-${String(rc.id).slice(0, 4).toUpperCase()}`,
+            funcao: rc.funcao || rc.cargo || 'Porteiro',
+            condominioId: rc.condominio_id || null,
+            postoNome: (rc.condominio_id && condoMap.get(rc.condominio_id)) || rc.posto_nome || 'Matriz - Reserva Central',
+            status: (rc.status as Colaborador['status']) || 'no_posto',
+            jornada: rc.jornada || (rc.tipo_jornada ? `${rc.tipo_jornada} (${rc.turno_inicio || '07:00'} - ${rc.turno_fim || '19:00'})` : '12x36 (07:00 - 19:00)'),
+            tipoEscala: (rc.tipo_jornada as Colaborador['tipoEscala']) || '12x36',
+            turno: rc.turno_inicio && parseInt(String(rc.turno_inicio), 10) >= 18 ? 'noturno' : 'diurno',
+            foto: rc.foto_url || '',
+            telefone: rc.telefone || '',
+            cpf: rc.cpf || '',
+            dataAdmissao: rc.data_admissao || '',
+            bancoHoras: rc.banco_horas !== undefined ? Number(rc.banco_horas) : 0,
+            ultimoPonto: rc.ultimo_ponto || '',
+            salarioBase: Number(rc.salario_base) || 0,
+            rg: rc.rg || undefined,
+            dataNascimento: rc.data_nascimento || undefined,
+            pis: rc.pis || undefined,
+            ctps: rc.ctps || undefined,
+            nomeMae: rc.nome_mae || undefined,
+            endereco: rc.endereco || undefined,
+            turnoInicio: rc.turno_inicio ? String(rc.turno_inicio).slice(0, 5) : undefined,
+            turnoFim: rc.turno_fim ? String(rc.turno_fim).slice(0, 5) : undefined,
+            pix: rc.pix || undefined,
+            banco: rc.banco || undefined,
+            agencia: rc.agencia || undefined,
+            conta: rc.conta || undefined,
+            recebeVT: rc.recebe_vt !== false,
+            recebeVR: rc.recebe_vr !== false,
+            valorVR: rc.valor_vr !== undefined && rc.valor_vr !== null ? Number(rc.valor_vr) : undefined,
+            recebeVA: rc.recebe_va !== false,
+            valorVA: rc.valor_va !== undefined && rc.valor_va !== null ? Number(rc.valor_va) : undefined,
+            valorExtraFT: rc.valor_extra_ft !== undefined && rc.valor_extra_ft !== null ? Number(rc.valor_extra_ft) : undefined,
+            valorBonus: rc.valor_bonus !== undefined && rc.valor_bonus !== null ? Number(rc.valor_bonus) : undefined,
+            email: rc.email || undefined,
+            role: (rc.role as Colaborador['role']) || 'funcionario',
+            primeiroAcessoConcluido: Boolean(rc.primeiro_acesso_concluido),
+          }))
+        );
+      }
+
+      // 3. Empresa Matriz & Configurações
+      const [{ data: remoteEmpresaInfo }, { data: remoteEmpresa }] = await Promise.all([
+        client.from('empresa_info').select('*').limit(1).maybeSingle(),
+        client.from('empresas').select('*').limit(1).maybeSingle(),
+      ]);
+      if (remoteEmpresaInfo || remoteEmpresa) {
+        setEmpresaInfo((prev) => ({
+          ...prev,
+          id: remoteEmpresa?.id || remoteEmpresaInfo?.empresa_id || prev.id || 'emp-matriz-principal',
+          razaoSocial: remoteEmpresaInfo?.razao_social || remoteEmpresa?.razao_social || prev.razaoSocial,
+          nomeFantasia: remoteEmpresaInfo?.nome_fantasia || remoteEmpresa?.nome_fantasia || prev.nomeFantasia,
+          cnpj: remoteEmpresaInfo?.cnpj || remoteEmpresa?.cnpj || prev.cnpj,
+          inscricaoEstadual: remoteEmpresaInfo?.inscricao_estadual || '',
+          inscricaoMunicipal: remoteEmpresaInfo?.inscricao_municipal || '',
+          telefone: remoteEmpresaInfo?.telefone || prev.telefone,
+          whatsapp: remoteEmpresaInfo?.whatsapp || prev.whatsapp,
+          email: remoteEmpresaInfo?.email || prev.email,
+          endereco: remoteEmpresaInfo?.endereco || prev.endereco,
+          bairro: remoteEmpresaInfo?.bairro || prev.bairro,
+          cidade: remoteEmpresaInfo?.cidade || prev.cidade,
+          estado: remoteEmpresaInfo?.estado || prev.estado,
+          cep: remoteEmpresaInfo?.cep || prev.cep,
+          responsavelOperacional: remoteEmpresaInfo?.responsavel_operacional || prev.responsavelOperacional,
+          cargoResponsavel: remoteEmpresaInfo?.cargo_responsavel || prev.cargoResponsavel,
+          chavePix: remoteEmpresaInfo?.chave_pix || '',
+          logoUrl: remoteEmpresaInfo?.logo_url || '',
+          apresentacao: remoteEmpresaInfo?.apresentacao || '',
+          maxGpsAccuracyM: remoteEmpresa?.max_gps_accuracy_m ? Number(remoteEmpresa.max_gps_accuracy_m) : prev.maxGpsAccuracyM || DEFAULT_MAX_ACCURACY_THRESHOLD_M,
+          exigeAceiteCobertura: remoteEmpresa?.exige_aceite_cobertura !== undefined ? Boolean(remoteEmpresa.exige_aceite_cobertura) : false,
+        }));
+      }
+
+      // 4. Pontos, Ponto Eventos, Ocorrências, Alertas, Atestados
+      const [
+        { data: remotePontos },
+        { data: remotePontoEventos },
+        { data: remoteOcorrs },
+        { data: remoteAlertas },
+        { data: remoteHolerites },
+        { data: remoteAtestados },
+        { data: remoteNotifs },
+        { data: remoteCorrecoes },
+      ] = await Promise.all([
+        client.from('pontos').select('*').order('created_at', { ascending: false }).limit(200),
+        client.from('ponto_eventos').select('*').order('server_timestamp', { ascending: false }).limit(200),
+        client.from('ocorrencias').select('*').order('created_at', { ascending: false }).limit(200),
+        client.from('alertas').select('*').order('created_at', { ascending: false }).limit(200),
+        client.from('holerites').select('*').order('created_at', { ascending: false }),
+        client.from('atestados').select('*').order('created_at', { ascending: false }),
+        client.from('notificacoes_sistema').select('*').order('created_at', { ascending: false }).limit(150),
+        client.from('solicitacoes_correcao_ponto').select('*').order('created_at', { ascending: false }).limit(150),
+      ]);
+
+      if (Array.isArray(remotePontos)) {
+        setPontos(
+          remotePontos.map((rp: any) => ({
+            id: rp.id,
+            colaboradorId: rp.colaborador_id,
+            colaboradorNome: rp.colaborador_nome || 'Colaborador',
+            data: rp.data || '',
+            entrada1: rp.entrada_1 || '--:--',
+            saida1: rp.saida_1 || '--:--',
+            entrada2: rp.entrada_2 || '--:--',
+            saida2: rp.saida_2 || '--:--',
+            totalHoras: rp.total_horas || '--',
+            statusPonto: rp.status_ponto || rp.status || 'Regular',
+            localizacaoGPS: rp.localizacao_gps || '',
+          }))
+        );
+      }
+
+      if (Array.isArray(remotePontoEventos)) {
+        setPontoEventos(
+          remotePontoEventos.map((pe: any) => ({
+            id: pe.id,
+            colaboradorId: pe.colaborador_id,
+            colaboradorNome: pe.colaborador_nome || 'Colaborador',
+            authUserId: pe.auth_user_id || undefined,
+            condominioId: pe.condominio_id || undefined,
+            condominioNome: pe.condominio_nome || pe.posto_detectado_nome || 'Posto',
+            postoNome: pe.posto_nome || pe.posto_detectado_nome || 'Posto',
+            tipoEvento: pe.tipo_evento,
+            labelEvento: pe.label_evento || pe.tipo_evento,
+            serverTimestamp: pe.server_timestamp,
+            latitude: pe.latitude !== null && pe.latitude !== undefined ? Number(pe.latitude) : undefined,
+            longitude: pe.longitude !== null && pe.longitude !== undefined ? Number(pe.longitude) : undefined,
+            accuracyM: pe.accuracy_m !== null && pe.accuracy_m !== undefined ? Number(pe.accuracy_m) : undefined,
+            accuracyRealM: pe.accuracy_real_m !== null && pe.accuracy_real_m !== undefined ? Number(pe.accuracy_real_m) : undefined,
+            geofenceStatus: pe.geofence_status,
+            decisaoGeofence: pe.decisao_geofence || pe.geofence_status,
+            distanceM: pe.distance_m !== null && pe.distance_m !== undefined ? Number(pe.distance_m) : undefined,
+            credentialId: pe.credential_id || undefined,
+            fotoBiometriaUrl: pe.foto_biometria_url || undefined,
+            metodoAutenticacao: pe.metodo_autenticacao || 'biometria_facial',
+            verificationStatus: pe.verification_status || 'confirmado',
+            classificacaoPosto: pe.classificacao_posto || 'posto_regular',
+            postoBaseId: pe.posto_base_id || undefined,
+            postoDetectadoId: pe.posto_detectado_id || undefined,
+            coverageAssignmentId: pe.coverage_assignment_id || undefined,
+            ambiguidadeDetectada: Boolean(pe.ambiguidade_detectada),
+            idempotencyKey: pe.idempotency_key || pe.id,
+            comprovanteNumero: pe.comprovante_numero || pe.id,
+            motivoExcecao: pe.motivo_excecao || undefined,
+            isCobertura: pe.classificacao_posto && pe.classificacao_posto !== 'posto_regular',
+            criadoEm: pe.criado_em || pe.created_at || pe.server_timestamp,
+          }))
+        );
+      }
+
+      if (Array.isArray(remoteOcorrs)) {
+        setOcorrencias(
+          remoteOcorrs.map((ro: any) => ({
+            id: ro.id,
+            postoId: ro.posto_id || '',
+            postoNome: ro.posto_nome || 'Posto',
+            tipo: ro.tipo || 'Ronda',
+            descricao: ro.descricao || '',
+            registradoPor: ro.registrado_por || '',
+            dataHora: ro.data_hora || '',
+            urgencia: ro.urgencia || 'media',
+            resolvida: Boolean(ro.resolvida),
+          }))
+        );
+      }
+
+      if (Array.isArray(remoteAlertas)) {
+        setAlertas(
+          remoteAlertas.map((ra: any) => ({
+            id: ra.id,
+            tipo: ra.tipo || 'posto_descoberto',
+            gravidade: ra.gravidade || 'moderada',
+            titulo: ra.titulo || '',
+            descricao: ra.descricao || '',
+            postoId: ra.posto_id || '',
+            postoNome: ra.posto_nome || '',
+            colaboradorId: ra.colaborador_id || undefined,
+            colaboradorNome: ra.colaborador_nome || undefined,
+            horario: ra.horario || '',
+            resolvido: Boolean(ra.resolvido),
+            resolvidoPor: ra.resolvido_por || undefined,
+            resolvidoEm: ra.resolvido_em || undefined,
+          }))
+        );
+      }
+
+      if (Array.isArray(remoteHolerites)) {
+        setHolerites((remoteHolerites as Record<string, unknown>[]).map(mapHoleriteRow));
+      }
+
+      if (Array.isArray(remoteAtestados)) {
+        setAtestados(
+          remoteAtestados.map((ra: any) => ({
+            id: ra.id,
+            colaboradorId: ra.colaborador_id,
+            colaboradorNome: ra.colaborador_nome,
+            matricula: ra.matricula || '',
+            postoNome: ra.posto_nome || '',
+            medico: ra.medico || '',
+            crm: ra.crm || '',
+            cid: ra.cid || '',
+            dataInicio: ra.data_inicio || '',
+            diasAfastamento: Number(ra.dias_afastamento) || 1,
+            status: ra.status || 'Pendente',
+            substitutoAlocadoId: ra.substituto_alocado_id || undefined,
+            anexoUrl: ra.anexo_url || undefined,
+          }))
+        );
+      }
+
+      if (Array.isArray(remoteNotifs)) {
+        setNotificacoesSistema(
+          remoteNotifs.map((n: any) => ({
+            id: n.id,
+            empresaId: n.empresa_id || 'emp-matriz-principal',
+            destinatarioColaboradorId: n.destinatario_colaborador_id || null,
+            destinatarioRole: n.destinatario_role || null,
+            categoria: n.categoria || 'sistema',
+            titulo: n.titulo,
+            mensagem: n.mensagem,
+            referenciaTipo: n.referencia_tipo || undefined,
+            referenciaId: n.referencia_id || undefined,
+            linkDestino: n.link_destino || undefined,
+            lida: Boolean(n.lida),
+            lidaEm: n.lida_em || null,
+            createdAt: n.created_at,
+          }))
+        );
+      }
+
+      if (Array.isArray(remoteCorrecoes)) {
+        setSolicitacoesCorrecao(
+          remoteCorrecoes.map((c: any) => ({
+            id: c.id,
+            colaboradorId: c.colaborador_id,
+            colaboradorNome: c.colaborador_nome || 'Colaborador',
+            dataPonto: c.data_ponto || '',
+            tipoCorrecao: c.tipo_correcao || 'divergencia_horario',
+            justificativa: c.justificativa || '',
+            status: c.status || 'pendente',
+            criadoEm: c.created_at || new Date().toISOString(),
+            respostaRH: c.resposta_rh || undefined,
+          }))
+        );
+      }
+
+      // 5. Fluxos de Coberturas, Documentos e Lotes de Holerites
+      const colabFilter = currentUser.role === 'funcionario' ? currentUser.colaboradorId : undefined;
+      const [covs, docReqs, docs, docHist, lotes, holEvs] = await Promise.all([
+        fetchCoberturas(colabFilter),
+        fetchDocumentoSolicitacoes(colabFilter),
+        fetchColaboradorDocumentos(colabFilter),
+        fetchDocumentoHistorico(colabFilter),
+        currentUser.role !== 'funcionario' ? fetchHoleriteLotes() : Promise.resolve([]),
+        currentUser.role !== 'funcionario' ? fetchHoleriteEventos() : Promise.resolve([]),
+      ]);
+
+      setCoberturasProgramadas(covs);
+      setDocumentoSolicitacoes(docReqs);
+      setColaboradorDocumentos(docs);
+      setDocumentoHistorico(docHist);
+      if (currentUser.role !== 'funcionario') {
+        setHoleriteLotes(lotes);
+        setHoleriteEventos(holEvs);
+      }
+    } catch (err) {
+      console.warn('Sync com Supabase finalizado com avisos:', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [currentUser]);
+
   useEffect(() => {
-    syncWithSupabase();
-  }, []);
+    if (currentUser) {
+      syncWithSupabase();
+    }
+  }, [currentUser?.id, syncWithSupabase]);
 
   // Modal Openers
   const openPosto360 = (postoOrId: CondominioPosto | string) => {
@@ -582,8 +843,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
   const closePosto360 = () => setSelectedPostoFor360(null);
 
-  const openSubstituicaoModal = (posto?: CondominioPosto, colaboradorFalta?: Colaborador) => {
-    setSubstituicaoModal({ isOpen: true, posto, colaboradorFalta });
+  const openSubstituicaoModal = (posto?: CondominioPosto, colaboradorFalta?: Colaborador, alertaId?: string) => {
+    setSubstituicaoModal({ isOpen: true, posto, colaboradorFalta, alertaId });
   };
   const closeSubstituicaoModal = () => setSubstituicaoModal(null);
 
@@ -608,52 +869,54 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCadastroModalOpen(false);
   };
 
-  const openNovoCondominioModal = () => {
-    setCondominioModal({ isOpen: true, isNovo: true });
-  };
-  const openEditarCondominioModal = (condominio: CondominioPosto) => {
+  const openNovoCondominioModal = () => setCondominioModal({ isOpen: true, isNovo: true });
+  const openEditarCondominioModal = (condominio: CondominioPosto) =>
     setCondominioModal({ isOpen: true, condominio, isNovo: false });
-  };
   const closeCondominioModal = () => setCondominioModal(null);
 
-  // ============================================================================
-  // AÇÕES OPERACIONAIS COM PERSISTÊNCIA REAL NO SUPABASE
-  // ============================================================================
+  const actorName = currentUser?.nome || 'Gestão Operacional';
 
-  // 1. Resolver Alerta Operacional
+  // 1. Resolver Alerta Operacional (apenas o alerta alvo)
   const resolverAlerta = async (alertaId: string): Promise<boolean> => {
     const resolvidoEmHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     setAlertas((prev) =>
       prev.map((alerta) =>
         alerta.id === alertaId
-          ? { ...alerta, resolvido: true, resolvidoPor: 'Supervisora Silva', resolvidoEm: resolvidoEmHora }
+          ? { ...alerta, resolvido: true, resolvidoPor: actorName, resolvidoEm: resolvidoEmHora }
           : alerta
       )
     );
 
     const client = getSupabase();
     if (client) {
-      try {
-        await client.from('alertas').update({
+      await client
+        .from('alertas')
+        .update({
           resolvido: true,
-          resolvido_por: 'Supervisora Silva',
+          resolvido_por: actorName,
           resolvido_em: resolvidoEmHora,
           updated_at: new Date().toISOString(),
-        }).eq('id', alertaId);
-      } catch (err) {
-        console.warn('Erro ao persistir resolução de alerta no Supabase:', err);
-      }
+        })
+        .eq('id', alertaId);
     }
 
-    showToast('Alerta operacional marcado como resolvido e atualizado no banco.');
+    showToast('Alerta marcado como resolvido.');
     return true;
   };
 
-  // 2. Substituir Colaborador (Emergencial / Despacho de Volante)
+  // 2. Substituir Colaborador (Emergencial — NUNCA altera colaboradores.condominio_id!)
   const substituirColaborador = async (
     postoId: string,
     substitutoId: string,
-    colaboradorFaltaId?: string
+    colaboradorFaltaId?: string,
+    options?: {
+      dataInicio?: string;
+      dataFim?: string;
+      horaInicio?: string;
+      horaFim?: string;
+      motivo?: string;
+      alertaId?: string;
+    }
   ): Promise<boolean> => {
     const posto = condominios.find((c) => c.id === postoId);
     const substituto = colaboradores.find((c) => c.id === substitutoId);
@@ -663,135 +926,102 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return false;
     }
 
-    const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const todayBR = new Intl.DateTimeFormat('fr-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
 
-    // Atualização local de colaboradores
-    setColaboradores((prev) =>
-      prev.map((c) => {
-        if (c.id === substitutoId) {
-          return {
-            ...c,
-            status: 'no_posto',
-            condominioId: posto.id,
-            postoNome: posto.nome,
-            ultimoPonto: `Hoje às ${agoraHora} (Substituição)`,
-            motivoStatus: `Alocado emergencialmente em cobertura no posto ${posto.nome}`,
-          };
-        }
-        if (colaboradorFaltaId && c.id === colaboradorFaltaId) {
-          return {
-            ...c,
-            status: 'falta',
-            motivoStatus: 'Falta no turno - Coberto por Volante',
-          };
-        }
-        return c;
-      })
-    );
+    const dataInicio = options?.dataInicio || todayBR;
+    const dataFim = options?.dataFim || dataInicio;
+    const horaInicio = options?.horaInicio || substituto.turnoInicio || '07:00';
+    const horaFim = options?.horaFim || substituto.turnoFim || '19:00';
+    const motivo =
+      options?.motivo ||
+      `Substituição emergencial em ${posto.nome}${colaboradorFaltaId ? ' por falta no turno' : ''}.`;
 
-    // Atualização local de condomínios
-    setCondominios((prev) =>
-      prev.map((c) => {
-        if (c.id === postoId) {
-          const currentOperando = c.plantaoAtual.operandoAgora.filter((id) => id !== colaboradorFaltaId);
-          if (!currentOperando.includes(substitutoId)) {
-            currentOperando.push(substitutoId);
-          }
-          return {
-            ...c,
-            status: 'operacional',
-            motivoAtencao: undefined,
-            coberturaPercentual: 100,
-            plantaoAtual: {
-              ...c.plantaoAtual,
-              operandoAgora: currentOperando,
-            },
-          };
-        }
-        return c;
-      })
-    );
+    const targetAlertId =
+      options?.alertaId ||
+      alertas.find(
+        (a) =>
+          !a.resolvido &&
+          a.postoId === postoId &&
+          (colaboradorFaltaId ? a.colaboradorId === colaboradorFaltaId : a.tipo === 'posto_descoberto' || a.tipo === 'falta')
+      )?.id;
 
-    // Resolver alertas do posto
-    setAlertas((prev) =>
-      prev.map((a) => (a.postoId === postoId ? { ...a, resolvido: true, resolvidoPor: 'Supervisora Silva', resolvidoEm: agoraHora } : a))
-    );
-
-    // Criar ocorrência no log
-    const novaOcorr: Ocorrencia = {
-      id: `ocorr-${Date.now()}`,
-      postoId: posto.id,
-      postoNome: posto.nome,
-      tipo: 'Posto Descoberto',
-      descricao: `Substituição emergencial realizada com sucesso. Colaborador ${substituto.nome} (${substituto.funcao}) assumiu o posto em cobertura.`,
-      registradoPor: 'Supervisora Silva',
-      dataHora: `Hoje às ${agoraHora}`,
-      urgencia: 'alta',
-      resolvida: true,
-    };
-    setOcorrencias((prev) => [novaOcorr, ...prev]);
-
-    // Persistência Completa no Supabase
     const client = getSupabase();
     if (client) {
-      try {
-        // Atualiza substituto no Supabase
-        await client.from('colaboradores').update({
-          condominio_id: posto.id,
-          status: 'no_posto',
-          updated_at: new Date().toISOString(),
-        }).eq('id', substitutoId);
+      const { data: rpcRes, error: rpcErr } = await client.rpc('registrar_substituicao_emergencial', {
+        p_posto_id: postoId,
+        p_substituto_id: substitutoId,
+        p_colaborador_falta_id: colaboradorFaltaId || null,
+        p_alerta_id: targetAlertId || null,
+        p_data_inicio: dataInicio,
+        p_data_fim: dataFim,
+        p_hora_inicio: horaInicio,
+        p_hora_fim: horaFim,
+        p_motivo: motivo,
+      });
 
-        // Se houver colaborador faltante, atualiza status para falta
-        if (colaboradorFaltaId) {
-          await client.from('colaboradores').update({
-            status: 'falta',
-            updated_at: new Date().toISOString(),
-          }).eq('id', colaboradorFaltaId);
-        }
-
-        // Atualiza status do condomínio para operacional
-        await client.from('condominios').update({
-          status: 'operacional',
-          motivo_atencao: null,
-          cobertura_percentual: 100,
-          updated_at: new Date().toISOString(),
-        }).eq('id', postoId);
-
-        // Salva a nova ocorrência
-        await client.from('ocorrencias').insert({
-          id: novaOcorr.id,
-          posto_id: novaOcorr.postoId,
-          posto_nome: novaOcorr.postoNome,
-          tipo: novaOcorr.tipo,
-          descricao: novaOcorr.descricao,
-          registrado_por: novaOcorr.registradoPor,
-          data_hora: novaOcorr.dataHora,
-          urgencia: novaOcorr.urgencia,
-          resolvida: true,
-        });
-
-        // Marca alertas do posto como resolvidos
-        await client.from('alertas').update({
-          resolvido: true,
-          resolvido_por: 'Supervisora Silva',
-          resolvido_em: agoraHora,
-        }).eq('posto_id', postoId);
-      } catch (err) {
-        console.warn('Erro ao persistir substituição no Supabase:', err);
+      if (rpcErr) {
+        showToast(`Falha ao registrar substituição: ${rpcErr.message}`);
+        return false;
       }
+
+      await syncWithSupabase();
+      closeSubstituicaoModal();
+      showToast(`Substituição temporária registrada para ${substituto.nome} em ${posto.nome} (lotação base preservada).`);
+      void rpcRes;
+      return true;
+    }
+
+    // Fallback sem Supabase
+    const covRes = await criarCoberturaProgramada(
+      {
+        empresaId: empresaInfo.id || 'emp-matriz-principal',
+        colaborador: substituto,
+        postoCobertura: posto,
+        tipo: 'substituicao',
+        dataInicio,
+        dataFim,
+        horaInicio,
+        horaFim,
+        motivo,
+        substituidoColaboradorId: colaboradorFaltaId,
+        alertaOrigemId: targetAlertId,
+        criadoPorNome: actorName,
+      },
+      coberturasProgramadas
+    );
+
+    if (!covRes.success || !covRes.cobertura) {
+      showToast(covRes.message);
+      return false;
+    }
+
+    setCoberturasProgramadas((prev) => [covRes.cobertura!, ...prev]);
+    if (colaboradorFaltaId) {
+      setColaboradores((prev) =>
+        prev.map((c) => (c.id === colaboradorFaltaId ? { ...c, status: 'falta', motivoStatus: 'Falta no turno - Coberto temporariamente' } : c))
+      );
+    }
+    if (targetAlertId) {
+      const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      setAlertas((prev) =>
+        prev.map((a) => (a.id === targetAlertId ? { ...a, resolvido: true, resolvidoPor: actorName, resolvidoEm: agoraHora } : a))
+      );
     }
 
     closeSubstituicaoModal();
-    showToast(`Substituição concluída e salva no banco! ${substituto.nome} alocado no ${posto.nome}.`);
+    showToast(`Substituição temporária registrada para ${substituto.nome} (posto habitual preservado).`);
     return true;
   };
 
-  // 3. Alocar Colaborador em Posto
+  // 3. Alocar Colaborador em Posto (Ação Administrativa Explícita)
   const alocarColaborador = async (postoId: string, colaboradorId: string, jornada: string): Promise<boolean> => {
     const posto = condominios.find((c) => c.id === postoId);
     const colab = colaboradores.find((c) => c.id === colaboradorId);
-
     if (!posto || !colab) return false;
 
     setColaboradores((prev) =>
@@ -802,50 +1032,25 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       )
     );
 
-    setCondominios((prev) =>
-      prev.map((c) => {
-        if (c.id === postoId) {
-          const current = [...c.plantaoAtual.operandoAgora];
-          if (!current.includes(colaboradorId)) current.push(colaboradorId);
-          return {
-            ...c,
-            status: 'operacional',
-            motivoAtencao: undefined,
-            coberturaPercentual: Math.min(100, Math.round((current.length / c.vagasContratadas) * 100)),
-            plantaoAtual: { ...c.plantaoAtual, operandoAgora: current },
-          };
-        }
-        return c;
-      })
-    );
-
-    // Persistência no Supabase
     const client = getSupabase();
     if (client) {
-      try {
-        await client.from('colaboradores').update({
+      await client
+        .from('colaboradores')
+        .update({
           condominio_id: posto.id,
           jornada: jornada || colab.jornada,
           status: 'no_posto',
           updated_at: new Date().toISOString(),
-        }).eq('id', colaboradorId);
-
-        await client.from('condominios').update({
-          status: 'operacional',
-          motivo_atencao: null,
-          updated_at: new Date().toISOString(),
-        }).eq('id', postoId);
-      } catch (err) {
-        console.warn('Erro ao persistir alocação no Supabase:', err);
-      }
+        })
+        .eq('id', colaboradorId);
     }
 
     closeAlocarModal();
-    showToast(`${colab.nome} alocado com sucesso no ${posto.nome} e salvo no banco!`);
+    showToast(`${colab.nome} alocado em ${posto.nome}.`);
     return true;
   };
 
-  // 4. Remover / Desvincular Colaborador do Posto
+  // 4. Desvincular Colaborador do Posto (Ação Administrativa Explícita)
   const removerColaboradorDoPosto = async (colaboradorId: string): Promise<boolean> => {
     const colab = colaboradores.find((c) => c.id === colaboradorId);
     if (!colab) return false;
@@ -858,37 +1063,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       )
     );
 
-    if (colab.condominioId) {
-      setCondominios((prev) =>
-        prev.map((c) => {
-          if (c.id === colab.condominioId) {
-            const updated = c.plantaoAtual.operandoAgora.filter((id) => id !== colaboradorId);
-            return {
-              ...c,
-              plantaoAtual: { ...c.plantaoAtual, operandoAgora: updated },
-              coberturaPercentual: Math.min(100, Math.round((updated.length / c.vagasContratadas) * 100)),
-            };
-          }
-          return c;
-        })
-      );
-    }
-
-    // Persistência no Supabase
     const client = getSupabase();
     if (client) {
-      try {
-        await client.from('colaboradores').update({
-          condominio_id: null,
-          status: 'folga',
-          updated_at: new Date().toISOString(),
-        }).eq('id', colaboradorId);
-      } catch (err) {
-        console.warn('Erro ao desvincular colaborador no Supabase:', err);
-      }
+      await client
+        .from('colaboradores')
+        .update({ condominio_id: null, status: 'folga', updated_at: new Date().toISOString() })
+        .eq('id', colaboradorId);
     }
 
-    showToast(`${colab.nome} transferido para a Reserva e atualizado no banco.`);
+    showToast(`${colab.nome} transferido para a Reserva.`);
     return true;
   };
 
@@ -901,100 +1084,74 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }): Promise<boolean> => {
     const posto = condominios.find((c) => c.id === dados.postoId);
     const nova: Ocorrencia = {
-      id: `ocorr-${Date.now()}`,
+      id: generateSafeId('ocorr'),
       postoId: dados.postoId,
       postoNome: posto ? posto.nome : 'Posto Geral',
       tipo: dados.tipo,
       descricao: dados.descricao,
-      registradoPor: 'Supervisora Silva',
-      dataHora: `Hoje às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+      registradoPor: actorName,
+      dataHora: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
       urgencia: dados.urgencia,
       resolvida: false,
     };
 
     setOcorrencias((prev) => [nova, ...prev]);
 
-    // Persistência no Supabase
     const client = getSupabase();
     if (client) {
-      try {
-        await client.from('ocorrencias').insert({
-          id: nova.id,
-          posto_id: nova.postoId,
-          posto_nome: nova.postoNome,
-          tipo: nova.tipo,
-          descricao: nova.descricao,
-          registrado_por: nova.registradoPor,
-          data_hora: nova.dataHora,
-          urgencia: nova.urgencia,
-          resolvida: false,
-        });
-      } catch (err) {
-        console.warn('Erro ao salvar ocorrência no Supabase:', err);
-      }
+      await client.from('ocorrencias').insert({
+        id: nova.id,
+        empresa_id: empresaInfo.id || 'emp-matriz-principal',
+        posto_id: nova.postoId || null,
+        posto_nome: nova.postoNome,
+        tipo: nova.tipo,
+        descricao: nova.descricao,
+        registrado_por: nova.registradoPor,
+        data_hora: nova.dataHora,
+        urgencia: nova.urgencia,
+        resolvida: false,
+      });
     }
 
     closeOcorrenciaModal();
-    showToast('Ocorrência operacional registrada e salva no banco de dados!');
+    showToast('Ocorrência operacional registrada.');
     return true;
   };
 
-  // 6. Aprovar Atestado Médico
+  // 6/7. Atestados Médicos
   const aprovarAtestado = async (atestadoId: string): Promise<boolean> => {
     setAtestados((prev) => prev.map((a) => (a.id === atestadoId ? { ...a, status: 'Aprovado' } : a)));
-
     const client = getSupabase();
     if (client) {
-      try {
-        await client.from('atestados').update({ status: 'Aprovado', updated_at: new Date().toISOString() }).eq('id', atestadoId);
-      } catch (err) {
-        console.warn('Erro ao atualizar atestado no Supabase:', err);
-      }
+      await client.from('atestados').update({ status: 'Aprovado', updated_at: new Date().toISOString() }).eq('id', atestadoId);
     }
-
-    showToast('Atestado médico aprovado e atualizado no banco de dados!');
+    showToast('Atestado médico aprovado.');
     return true;
   };
 
-  // 7. Recusar Atestado Médico
   const recusarAtestado = async (atestadoId: string): Promise<boolean> => {
     setAtestados((prev) => prev.map((a) => (a.id === atestadoId ? { ...a, status: 'Recusado' } : a)));
-
     const client = getSupabase();
     if (client) {
-      try {
-        await client.from('atestados').update({ status: 'Recusado', updated_at: new Date().toISOString() }).eq('id', atestadoId);
-      } catch (err) {
-        console.warn('Erro ao atualizar atestado no Supabase:', err);
-      }
+      await client.from('atestados').update({ status: 'Recusado', updated_at: new Date().toISOString() }).eq('id', atestadoId);
     }
-
     showToast('Atestado médico recusado.');
     return true;
   };
 
-  // 8. Assinar Holerite Digital
+  // 8. Holerite ciência fallback
   const assinarHolerite = async (holeriteId: string): Promise<boolean> => {
-    setHolerites((prev) => prev.map((h) => (h.id === holeriteId ? { ...h, statusEnvio: 'Assinado' } : h)));
-
-    const client = getSupabase();
-    if (client) {
-      try {
-        await client.from('holerites').update({
-          status_envio: 'Assinado',
-          data_assinatura: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }).eq('id', holeriteId);
-      } catch (err) {
-        console.warn('Erro ao atualizar holerite no Supabase:', err);
-      }
-    }
-
-    showToast('Contracheque assinado digitalmente com sucesso!');
+    setHolerites((prev) =>
+      prev.map((h) =>
+        h.id === holeriteId
+          ? { ...h, statusEnvio: 'Assinado', cienciaConfirmadaEm: new Date().toISOString() }
+          : h
+      )
+    );
     return true;
   };
 
-  // 9. Registrar Ponto Eletrônico
+  // 9. Espelho consolidado de ponto (pontos)
   const registrarPonto = async (dados: Partial<PontoRegistro> & { colaboradorId: string }): Promise<boolean> => {
     const colab = colaboradores.find((c) => c.id === dados.colaboradorId);
     const dataHoje = dados.data || new Date().toISOString().split('T')[0];
@@ -1003,71 +1160,30 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       colaboradorId: dados.colaboradorId,
       colaboradorNome: colab?.nome || dados.colaboradorNome || 'Colaborador',
       data: dataHoje,
-      entrada1: dados.entrada1 || '07:00',
-      saida1: dados.saida1 || '12:00',
-      entrada2: dados.entrada2 || '13:00',
-      saida2: dados.saida2 || '19:00',
-      totalHoras: dados.totalHoras || '11h 00m',
+      entrada1: dados.entrada1 || '--:--',
+      saida1: dados.saida1 || '--:--',
+      entrada2: dados.entrada2 || '--:--',
+      saida2: dados.saida2 || '--:--',
+      totalHoras: dados.totalHoras || '--',
       statusPonto: dados.statusPonto || 'Regular',
-      localizacaoGPS: dados.localizacaoGPS || 'Dentro do Raio Geofence (12m)',
+      localizacaoGPS: dados.localizacaoGPS || '',
     };
 
     setPontos((prev) => [novoPonto, ...prev]);
 
     const client = getSupabase();
     if (client) {
-      try {
-        // 1. Garante que o colaborador exista em 'colaboradores' (evita violação FK fk_pontos_colaborador)
-        if (colab) {
-          await client.from('colaboradores').upsert({
-            id: colab.id,
-            nome: colab.nome,
-            full_name: colab.nome,
-            matricula: colab.matricula || `TC-${colab.id.slice(0, 4)}`,
-            funcao: colab.funcao || 'Porteiro',
-            cargo: colab.funcao || 'Porteiro',
-            status: colab.status || 'no_posto',
-            condominio_id: colab.condominioId || null,
-            cpf: colab.cpf || null,
-            role: colab.role || 'funcionario',
-          });
-        }
+      const { data: existingRows } = await client
+        .from('pontos')
+        .select('id')
+        .eq('colaborador_id', novoPonto.colaboradorId)
+        .eq('data', dataHoje)
+        .limit(1);
 
-        // 2. Verifica se já existe registro de ponto na data
-        const { data: existingRows } = await client
+      if (existingRows && existingRows.length > 0) {
+        await client
           .from('pontos')
-          .select('id')
-          .eq('colaborador_id', novoPonto.colaboradorId)
-          .eq('data', dataHoje)
-          .limit(1);
-
-        if (existingRows && existingRows.length > 0) {
-          const { error: updErr } = await client
-            .from('pontos')
-            .update({
-              entrada_1: novoPonto.entrada1,
-              saida_1: novoPonto.saida1,
-              entrada_2: novoPonto.entrada2,
-              saida_2: novoPonto.saida2,
-              total_horas: novoPonto.totalHoras,
-              status_ponto: novoPonto.statusPonto,
-              status: novoPonto.statusPonto,
-              localizacao_gps: novoPonto.localizacaoGPS,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', existingRows[0].id);
-
-          if (updErr) {
-            console.warn('Erro ao atualizar ponto no Supabase:', updErr.message);
-          } else {
-            console.info('Ponto atualizado com sucesso no Supabase:', existingRows[0].id);
-          }
-        } else {
-          const { error: insErr } = await client.from('pontos').insert({
-            id: novoPonto.id,
-            colaborador_id: novoPonto.colaboradorId,
-            colaborador_nome: novoPonto.colaboradorNome,
-            data: novoPonto.data,
+          .update({
             entrada_1: novoPonto.entrada1,
             saida_1: novoPonto.saida1,
             entrada_2: novoPonto.entrada2,
@@ -1076,80 +1192,92 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             status_ponto: novoPonto.statusPonto,
             status: novoPonto.statusPonto,
             localizacao_gps: novoPonto.localizacaoGPS,
-            created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
-          });
-
-          if (insErr) {
-            console.warn('Erro ao inserir ponto no Supabase:', insErr.message);
-          } else {
-            console.info('Ponto gravado com sucesso no Supabase:', novoPonto.id);
-          }
-        }
-      } catch (err) {
-        console.warn('Erro ao salvar ponto no Supabase:', err);
+          })
+          .eq('id', existingRows[0].id);
+      } else {
+        await client.from('pontos').insert({
+          id: novoPonto.id,
+          empresa_id: empresaInfo.id || 'emp-matriz-principal',
+          colaborador_id: novoPonto.colaboradorId,
+          colaborador_nome: novoPonto.colaboradorNome,
+          data: novoPonto.data,
+          entrada_1: novoPonto.entrada1,
+          saida_1: novoPonto.saida1,
+          entrada_2: novoPonto.entrada2,
+          saida_2: novoPonto.saida2,
+          total_horas: novoPonto.totalHoras,
+          status_ponto: novoPonto.statusPonto,
+          status: novoPonto.statusPonto,
+          localizacao_gps: novoPonto.localizacaoGPS,
+        });
       }
     }
 
-    showToast(`Ponto registrado com sucesso para ${novoPonto.colaboradorNome}!`);
     return true;
   };
 
-  // 10. Atualizar Dados da Empresa Matriz
+  // 10. Atualizar Empresa (incluindo maxGpsAccuracyM e exigeAceiteCobertura)
   const atualizarEmpresaInfo = async (dados: Partial<EmpresaInfo>): Promise<boolean> => {
     const updated = { ...empresaInfo, ...dados };
     setEmpresaInfo(updated);
 
     const client = getSupabase();
     if (client) {
-      try {
-        await client.from('empresa_info').upsert({
-          id: 'matriz-principal',
-          razao_social: updated.razaoSocial,
-          nome_fantasia: updated.nomeFantasia,
-          cnpj: updated.cnpj,
-          inscricao_estadual: updated.inscricaoEstadual || null,
-          inscricao_municipal: updated.inscricaoMunicipal || null,
-          telefone: updated.telefone,
-          whatsapp: updated.whatsapp,
-          email: updated.email,
-          endereco: updated.endereco,
-          bairro: updated.bairro,
-          cidade: updated.cidade,
-          estado: updated.estado,
-          cep: updated.cep,
-          responsavel_operacional: updated.responsavelOperacional,
-          cargo_responsavel: updated.cargoResponsavel,
-          chave_pix: updated.chavePix || null,
-          logo_url: updated.logoUrl || null,
-          apresentacao: updated.apresentacao || null,
-          updated_at: new Date().toISOString(),
-        });
-      } catch (err) {
-        console.warn('Erro ao atualizar empresa_info no Supabase:', err);
+      await client.from('empresa_info').upsert({
+        id: 'matriz-principal',
+        empresa_id: updated.id || 'emp-matriz-principal',
+        razao_social: updated.razaoSocial,
+        nome_fantasia: updated.nomeFantasia,
+        cnpj: updated.cnpj,
+        inscricao_estadual: updated.inscricaoEstadual || null,
+        inscricao_municipal: updated.inscricaoMunicipal || null,
+        telefone: updated.telefone,
+        whatsapp: updated.whatsapp,
+        email: updated.email,
+        endereco: updated.endereco,
+        bairro: updated.bairro,
+        cidade: updated.cidade,
+        estado: updated.estado,
+        cep: updated.cep,
+        responsavel_operacional: updated.responsavelOperacional,
+        cargo_responsavel: updated.cargoResponsavel,
+        chave_pix: updated.chavePix || null,
+        logo_url: updated.logoUrl || null,
+        apresentacao: updated.apresentacao || null,
+        updated_at: new Date().toISOString(),
+      });
+
+      if (updated.id) {
+        await client
+          .from('empresas')
+          .update({
+            razao_social: updated.razaoSocial,
+            nome_fantasia: updated.nomeFantasia,
+            cnpj: updated.cnpj,
+            max_gps_accuracy_m: Math.max(10, Math.min(500, Number(updated.maxGpsAccuracyM) || DEFAULT_MAX_ACCURACY_THRESHOLD_M)),
+            exige_aceite_cobertura: Boolean(updated.exigeAceiteCobertura),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', updated.id);
       }
     }
 
-    showToast('Dados da empresa matriz atualizados e salvos no banco de dados!');
+    showToast('Configurações da empresa atualizadas.');
     setEmpresaModalOpen(false);
     return true;
   };
 
-  // 11. Cadastrar Funcionário
+  // 11. Cadastrar Funcionário (sem senha em texto claro na tabela)
   const cadastrarFuncionario = async (dados: NovoFuncionarioPayload): Promise<boolean> => {
     const condom = condominios.find((c) => c.id === dados.condominioId);
     const postoNome = condom ? condom.nome : 'Matriz - Reserva Central';
     const newId = generateSafeId('colab');
     const randomMatricula = `TC-${Math.floor(1150 + Math.random() * 850)}`;
-
     const jornadaDesc = `${dados.regimeEscala} (${dados.turnoInicio || '07:00'} - ${dados.turnoFim || '19:00'})`;
     const horaInicioNum = dados.turnoInicio ? parseInt(dados.turnoInicio.split(':')[0], 10) : 7;
     const turnoTipo: 'diurno' | 'noturno' | 'comercial' =
-      horaInicioNum >= 18 || horaInicioNum < 5
-        ? 'noturno'
-        : dados.regimeEscala === '6x1'
-        ? 'comercial'
-        : 'diurno';
+      horaInicioNum >= 18 || horaInicioNum < 5 ? 'noturno' : dados.regimeEscala === '6x1' ? 'comercial' : 'diurno';
 
     const novoColaborador: Colaborador = {
       id: newId,
@@ -1157,17 +1285,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       matricula: randomMatricula,
       funcao: dados.cargo,
       condominioId: dados.condominioId || null,
-      postoNome: postoNome,
+      postoNome,
       status: 'no_posto',
       jornada: jornadaDesc,
       tipoEscala: dados.regimeEscala,
       turno: turnoTipo,
-      foto: dados.foto || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+      foto: dados.foto || '',
       telefone: dados.telefone,
       cpf: dados.cpf,
       dataAdmissao: dados.dataAdmissao || new Date().toISOString().split('T')[0],
       bancoHoras: 0,
-      ultimoPonto: `Admitido em ${dados.dataAdmissao || 'Hoje'}`,
+      ultimoPonto: '',
       salarioBase: Number(dados.salarioBase) || 2150,
       rg: dados.rg,
       dataNascimento: dados.dataNascimento,
@@ -1195,159 +1323,61 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setColaboradores((prev) => [novoColaborador, ...prev]);
 
-    // Atualiza postos e vagas ocupadas se alocado em condomínio
-    if (condom) {
-      setCondominios((prev) =>
-        prev.map((c) => {
-          if (c.id === condom.id) {
-            const updatedOperando = [...c.plantaoAtual.operandoAgora, newId];
-            return {
-              ...c,
-              status: c.status === 'critico' ? 'operacional' : c.status,
-              motivoAtencao: c.status === 'critico' ? undefined : c.motivoAtencao,
-              coberturaPercentual: Math.min(100, Math.round((updatedOperando.length / c.vagasContratadas) * 100)),
-              plantaoAtual: { ...c.plantaoAtual, operandoAgora: updatedOperando },
-            };
-          }
-          return c;
-        })
-      );
-    }
-
-    // Persistência no Supabase
     const client = getSupabase();
-    let persistSuccess = false;
-
     if (client) {
-      try {
-        let targetId = newId;
-
-        // Se CPF já existir no Supabase, reutiliza o ID existente
-        if (dados.cpf) {
-          const { data: existingColab } = await client
-            .from('colaboradores')
-            .select('id')
-            .eq('cpf', dados.cpf)
-            .maybeSingle();
-
-          if (existingColab?.id) {
-            targetId = existingColab.id;
-            novoColaborador.id = targetId;
-            setColaboradores((prev) => prev.map((c) => (c.id === newId ? { ...c, id: targetId } : c)));
-          }
-        }
-
-        // Se condominioId foi informado, garante que o condomínio exista no Supabase (evita erro FK 23503)
-        if (dados.condominioId) {
-          const condoVinculado = condominios.find((c) => c.id === dados.condominioId);
-          if (condoVinculado) {
-            await client.from('condominios').upsert({
-              id: condoVinculado.id,
-              nome: condoVinculado.nome,
-              tipo: condoVinculado.tipo || 'Residencial',
-              cnpj: condoVinculado.cnpj || null,
-              endereco: condoVinculado.endereco || 'Endereço não informado',
-              latitude: condoVinculado.latitude !== undefined && condoVinculado.latitude !== null ? Number(condoVinculado.latitude) : null,
-              longitude: condoVinculado.longitude !== undefined && condoVinculado.longitude !== null ? Number(condoVinculado.longitude) : null,
-              raio_gps_metros: condoVinculado.raioGpsMetros || 150,
-              lat: condoVinculado.latitude !== undefined && condoVinculado.latitude !== null ? Number(condoVinculado.latitude) : null,
-              lng: condoVinculado.longitude !== undefined && condoVinculado.longitude !== null ? Number(condoVinculado.longitude) : null,
-              raio_tolerancia_metros: condoVinculado.raioGpsMetros || 150,
-              status: condoVinculado.status || 'operacional',
-              vagas_contratadas: condoVinculado.vagasContratadas || 2,
-            });
-          }
-        }
-
-        const colabPayload = {
-          id: targetId,
-          nome: dados.nome,
-          full_name: dados.nome,
-          matricula: randomMatricula,
-          funcao: dados.cargo,
-          cargo: dados.cargo,
-          condominio_id: dados.condominioId || null,
-          status: 'no_posto',
-          jornada: jornadaDesc,
-          tipo_jornada: dados.regimeEscala,
-          turno_inicio: dados.turnoInicio || '07:00:00',
-          turno_fim: dados.turnoFim || '19:00:00',
-          data_admissao: dados.dataAdmissao || new Date().toISOString().split('T')[0],
-          salario_base: Number(dados.salarioBase) || 2150,
-          banco_horas: 0,
-          cpf: dados.cpf || null,
-          rg: dados.rg || null,
-          data_nascimento: dados.dataNascimento || null,
-          telefone: dados.telefone || null,
-          pis: dados.pis || null,
-          ctps: dados.ctps || null,
-          nome_mae: dados.nomeMae || null,
-          endereco: dados.endereco || null,
-          pix: dados.pix || null,
-          banco: dados.banco || null,
-          agencia: dados.agencia || null,
-          conta: dados.conta || null,
-          recebe_vt: dados.recebeVT !== false,
-          recebe_vr: dados.recebeVR !== false,
-          valor_vr: dados.valorVR !== undefined ? Number(dados.valorVR) : 28.5,
-          recebe_va: dados.recebeVA !== false,
-          valor_va: dados.valorVA !== undefined ? Number(dados.valorVA) : 220.0,
-          valor_extra_ft: dados.valorExtraFT !== undefined ? Number(dados.valorExtraFT) : 160.0,
-          valor_bonus: dados.valorBonus !== undefined ? Number(dados.valorBonus) : 0.0,
-          foto_url: dados.foto || null,
-          email: dados.email || null,
-          senha: dados.senha || null,
-          role: dados.role || 'funcionario',
-          primeiro_acesso_concluido: false,
-          updated_at: new Date().toISOString(),
-        };
-
-        const { error: colabErr } = await client.from('colaboradores').upsert(colabPayload);
-        if (!colabErr) {
-          persistSuccess = true;
-          console.info('Colaborador salvo com sucesso no Supabase:', targetId);
-        } else {
-          console.warn('Erro ao salvar colaborador no Supabase:', colabErr.message);
-        }
-
-        // Espelho em profiles (se targetId for um UUID válido)
-        if (isValidUUID(targetId)) {
-          try {
-            const profilePayload = {
-              id: targetId,
-              full_name: dados.nome,
-              nome: dados.nome,
-              cpf: dados.cpf || '000.000.000-00',
-              rg: dados.rg || null,
-              data_nascimento: dados.dataNascimento || null,
-              telefone: dados.telefone || null,
-              cargo: dados.cargo,
-              role: dados.role || 'funcionario',
-              email: dados.email || null,
-              condominio_id: dados.condominioId && isValidUUID(dados.condominioId) ? dados.condominioId : null,
-              updated_at: new Date().toISOString(),
-            };
-            await client.from('profiles').upsert(profilePayload);
-          } catch (pErr) {
-            console.warn('Espelho em profiles opcional ignorado:', pErr);
-          }
-        }
-      } catch (err) {
-        console.warn('Erro ao salvar colaborador no Supabase:', err);
+      const { error } = await client.from('colaboradores').upsert({
+        id: newId,
+        empresa_id: empresaInfo.id || 'emp-matriz-principal',
+        nome: dados.nome,
+        full_name: dados.nome,
+        matricula: randomMatricula,
+        funcao: dados.cargo,
+        cargo: dados.cargo,
+        condominio_id: dados.condominioId || null,
+        status: 'no_posto',
+        jornada: jornadaDesc,
+        tipo_jornada: dados.regimeEscala,
+        turno_inicio: dados.turnoInicio || '07:00:00',
+        turno_fim: dados.turnoFim || '19:00:00',
+        data_admissao: dados.dataAdmissao || new Date().toISOString().split('T')[0],
+        salario_base: Number(dados.salarioBase) || 2150,
+        banco_horas: 0,
+        cpf: dados.cpf || null,
+        rg: dados.rg || null,
+        data_nascimento: dados.dataNascimento || null,
+        telefone: dados.telefone || null,
+        pis: dados.pis || null,
+        ctps: dados.ctps || null,
+        nome_mae: dados.nomeMae || null,
+        endereco: dados.endereco || null,
+        pix: dados.pix || null,
+        banco: dados.banco || null,
+        agencia: dados.agencia || null,
+        conta: dados.conta || null,
+        recebe_vt: dados.recebeVT !== false,
+        recebe_vr: dados.recebeVR !== false,
+        valor_vr: dados.valorVR !== undefined ? Number(dados.valorVR) : 28.5,
+        recebe_va: dados.recebeVA !== false,
+        valor_va: dados.valorVA !== undefined ? Number(dados.valorVA) : 220.0,
+        valor_extra_ft: dados.valorExtraFT !== undefined ? Number(dados.valorExtraFT) : 160.0,
+        valor_bonus: dados.valorBonus !== undefined ? Number(dados.valorBonus) : 0.0,
+        foto_url: dados.foto || null,
+        email: dados.email || null,
+        role: dados.role || 'funcionario',
+        primeiro_acesso_concluido: false,
+        updated_at: new Date().toISOString(),
+      });
+      if (error) {
+        showToast(`Aviso ao salvar no Supabase: ${error.message}`);
       }
     }
 
-    if (persistSuccess) {
-      showToast(`✅ Colaborador ${dados.nome} salvo com sucesso no Supabase!`);
-    } else {
-      showToast(`Colaborador ${dados.nome} cadastrado com sucesso!`);
-    }
-
+    showToast(`Colaborador ${dados.nome} cadastrado.`);
     closeCadastroModal();
     return true;
   };
 
-  // 12. Atualizar Funcionário
+  // 12. Atualizar Funcionário (sem campo senha)
   const atualizarFuncionario = async (id: string, dados: Partial<Colaborador>): Promise<boolean> => {
     const colabAtual = colaboradores.find((c) => c.id === id);
     if (!colabAtual) return false;
@@ -1358,68 +1388,60 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setColaboradores((prev) => prev.map((c) => (c.id === id ? { ...c, ...dados, postoNome } : c)));
 
-    // Persistência no Supabase
     const client = getSupabase();
     if (client) {
-      try {
-        const payloadToUpdate: Record<string, any> = {
-          updated_at: new Date().toISOString(),
-        };
-        if (dados.nome !== undefined) {
-          payloadToUpdate.nome = dados.nome;
-          payloadToUpdate.full_name = dados.nome;
-        }
-        if (dados.cpf !== undefined) payloadToUpdate.cpf = dados.cpf;
-        if (dados.rg !== undefined) payloadToUpdate.rg = dados.rg;
-        if (dados.dataNascimento !== undefined) payloadToUpdate.data_nascimento = dados.dataNascimento;
-        if (dados.telefone !== undefined) payloadToUpdate.telefone = dados.telefone;
-        if (dados.pis !== undefined) payloadToUpdate.pis = dados.pis;
-        if (dados.ctps !== undefined) payloadToUpdate.ctps = dados.ctps;
-        if (dados.nomeMae !== undefined) payloadToUpdate.nome_mae = dados.nomeMae;
-        if (dados.endereco !== undefined) payloadToUpdate.endereco = dados.endereco;
-        if (dados.funcao !== undefined) {
-          payloadToUpdate.cargo = dados.funcao;
-          payloadToUpdate.funcao = dados.funcao;
-        }
-        if (dados.tipoEscala !== undefined) {
-          payloadToUpdate.tipo_jornada = dados.tipoEscala;
-          payloadToUpdate.jornada = `${dados.tipoEscala} (${dados.turnoInicio || colabAtual.turnoInicio || '07:00'} - ${dados.turnoFim || colabAtual.turnoFim || '19:00'})`;
-        }
-        if (dados.turnoInicio !== undefined) payloadToUpdate.turno_inicio = dados.turnoInicio;
-        if (dados.turnoFim !== undefined) payloadToUpdate.turno_fim = dados.turnoFim;
-        if (dados.salarioBase !== undefined) payloadToUpdate.salario_base = Number(dados.salarioBase);
-        if (dados.status !== undefined) payloadToUpdate.status = dados.status;
-        if (dados.pix !== undefined) payloadToUpdate.pix = dados.pix;
-        if (dados.banco !== undefined) payloadToUpdate.banco = dados.banco;
-        if (dados.agencia !== undefined) payloadToUpdate.agencia = dados.agencia;
-        if (dados.conta !== undefined) payloadToUpdate.conta = dados.conta;
-        if (dados.recebeVT !== undefined) payloadToUpdate.recebe_vt = dados.recebeVT;
-        if (dados.recebeVR !== undefined) payloadToUpdate.recebe_vr = dados.recebeVR;
-        if (dados.valorVR !== undefined) payloadToUpdate.valor_vr = Number(dados.valorVR);
-        if (dados.recebeVA !== undefined) payloadToUpdate.recebe_va = dados.recebeVA;
-        if (dados.valorVA !== undefined) payloadToUpdate.valor_va = Number(dados.valorVA);
-        if (dados.valorExtraFT !== undefined) payloadToUpdate.valor_extra_ft = Number(dados.valorExtraFT);
-        if (dados.valorBonus !== undefined) payloadToUpdate.valor_bonus = Number(dados.valorBonus);
-        if (dados.email !== undefined) payloadToUpdate.email = dados.email || null;
-        if (dados.senha !== undefined) payloadToUpdate.senha = dados.senha || null;
-        if (dados.role !== undefined) payloadToUpdate.role = dados.role;
-        if (dados.foto !== undefined) payloadToUpdate.foto_url = dados.foto;
-        if (novoCondominioId !== undefined) payloadToUpdate.condominio_id = novoCondominioId || null;
+      const payloadToUpdate: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (dados.nome !== undefined) {
+        payloadToUpdate.nome = dados.nome;
+        payloadToUpdate.full_name = dados.nome;
+      }
+      if (dados.cpf !== undefined) payloadToUpdate.cpf = dados.cpf;
+      if (dados.rg !== undefined) payloadToUpdate.rg = dados.rg;
+      if (dados.dataNascimento !== undefined) payloadToUpdate.data_nascimento = dados.dataNascimento;
+      if (dados.telefone !== undefined) payloadToUpdate.telefone = dados.telefone;
+      if (dados.pis !== undefined) payloadToUpdate.pis = dados.pis;
+      if (dados.ctps !== undefined) payloadToUpdate.ctps = dados.ctps;
+      if (dados.nomeMae !== undefined) payloadToUpdate.nome_mae = dados.nomeMae;
+      if (dados.endereco !== undefined) payloadToUpdate.endereco = dados.endereco;
+      if (dados.funcao !== undefined) {
+        payloadToUpdate.cargo = dados.funcao;
+        payloadToUpdate.funcao = dados.funcao;
+      }
+      if (dados.tipoEscala !== undefined) {
+        payloadToUpdate.tipo_jornada = dados.tipoEscala;
+        payloadToUpdate.jornada = `${dados.tipoEscala} (${dados.turnoInicio || colabAtual.turnoInicio || '07:00'} - ${dados.turnoFim || colabAtual.turnoFim || '19:00'})`;
+      }
+      if (dados.turnoInicio !== undefined) payloadToUpdate.turno_inicio = dados.turnoInicio;
+      if (dados.turnoFim !== undefined) payloadToUpdate.turno_fim = dados.turnoFim;
+      if (dados.salarioBase !== undefined) payloadToUpdate.salario_base = Number(dados.salarioBase);
+      if (dados.status !== undefined) payloadToUpdate.status = dados.status;
+      if (dados.pix !== undefined) payloadToUpdate.pix = dados.pix;
+      if (dados.banco !== undefined) payloadToUpdate.banco = dados.banco;
+      if (dados.agencia !== undefined) payloadToUpdate.agencia = dados.agencia;
+      if (dados.conta !== undefined) payloadToUpdate.conta = dados.conta;
+      if (dados.recebeVT !== undefined) payloadToUpdate.recebe_vt = dados.recebeVT;
+      if (dados.recebeVR !== undefined) payloadToUpdate.recebe_vr = dados.recebeVR;
+      if (dados.valorVR !== undefined) payloadToUpdate.valor_vr = Number(dados.valorVR);
+      if (dados.recebeVA !== undefined) payloadToUpdate.recebe_va = dados.recebeVA;
+      if (dados.valorVA !== undefined) payloadToUpdate.valor_va = Number(dados.valorVA);
+      if (dados.valorExtraFT !== undefined) payloadToUpdate.valor_extra_ft = Number(dados.valorExtraFT);
+      if (dados.valorBonus !== undefined) payloadToUpdate.valor_bonus = Number(dados.valorBonus);
+      if (dados.email !== undefined) payloadToUpdate.email = dados.email || null;
+      if (dados.role !== undefined) payloadToUpdate.role = dados.role;
+      if (dados.foto !== undefined) payloadToUpdate.foto_url = dados.foto;
+      if (novoCondominioId !== undefined) payloadToUpdate.condominio_id = novoCondominioId || null;
 
-        await client.from('colaboradores').update(payloadToUpdate).eq('id', id);
-
-        // Atualiza profiles
+      await client.from('colaboradores').update(payloadToUpdate).eq('id', id);
+      if (isValidUUID(id)) {
         const profileUpd = { ...payloadToUpdate };
         if (profileUpd.condominio_id && !isValidUUID(profileUpd.condominio_id)) {
           profileUpd.condominio_id = null;
         }
-        await client.from('profiles').update(profileUpd).eq('id', id);
-      } catch (err) {
-        console.warn('Erro ao atualizar colaborador no Supabase:', err);
+        await client.from('profiles').update(profileUpd).eq('colaborador_id', id);
       }
     }
 
-    showToast(`Colaborador ${dados.nome || colabAtual.nome} atualizado e salvo no banco!`);
+    showToast(`Colaborador ${dados.nome || colabAtual.nome} atualizado.`);
     closeCadastroModal();
     return true;
   };
@@ -1428,126 +1450,98 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const excluirFuncionario = async (id: string): Promise<boolean> => {
     const colab = colaboradores.find((c) => c.id === id);
     if (!colab) return false;
-
     setColaboradores((prev) => prev.filter((c) => c.id !== id));
 
     const client = getSupabase();
     if (client) {
-      try {
-        await client.from('colaboradores').delete().eq('id', id);
-        if (colab.cpf) {
-          await client.from('colaboradores').delete().eq('cpf', colab.cpf);
-        }
-        await client.from('profiles').delete().eq('id', id);
-      } catch (err) {
-        console.warn('Erro ao excluir colaborador no Supabase:', err);
-      }
+      await client.from('colaboradores').delete().eq('id', id);
     }
 
-    showToast(`Colaborador ${colab.nome} removido do sistema e banco de dados.`);
+    showToast(`Colaborador ${colab.nome} removido.`);
     return true;
   };
 
-  // 14. Cadastrar Condomínio / Posto
+  // 14. Cadastrar Condomínio (permite latitude/longitude null sem fallback fictício)
   const cadastrarCondominio = async (dados: Partial<CondominioPosto> & { nome: string }): Promise<boolean> => {
     const newId = generateSafeId('cond');
+    const hasCoords =
+      typeof dados.latitude === 'number' &&
+      Number.isFinite(dados.latitude) &&
+      typeof dados.longitude === 'number' &&
+      Number.isFinite(dados.longitude);
+
     const novoCondo: CondominioPosto = {
       id: newId,
       nome: dados.nome,
       tipo: dados.tipo || 'Residencial',
-      cnpj: dados.cnpj || '00.000.000/0001-00',
-      contratoNumero: dados.contratoNumero || `CT-2026/${Math.floor(100 + Math.random() * 900)}`,
-      endereco: dados.endereco || 'Endereço não informado',
-      bairro: dados.bairro || 'Centro',
-      cidade: dados.cidade || 'São Paulo - SP',
+      cnpj: dados.cnpj || '',
+      contratoNumero: dados.contratoNumero || '',
+      endereco: dados.endereco || '',
+      bairro: dados.bairro || '',
+      cidade: dados.cidade || '',
       cep: dados.cep || '',
-      supervisor: dados.supervisor || 'Supervisora Silva',
-      telefoneSupervisor: dados.telefoneSupervisor || '(11) 98842-1190',
+      supervisor: dados.supervisor || actorName,
+      telefoneSupervisor: dados.telefoneSupervisor || '',
       vagasContratadas: Number(dados.vagasContratadas) || 2,
       status: dados.status || 'operacional',
       motivoAtencao: dados.motivoAtencao,
       tipoEscalaPadrao: dados.tipoEscalaPadrao || '12x36 (07:00 - 19:00)',
-      plantaoAtual: {
-        operandoAgora: [],
-        proximaRendicao: { colaboradorId: '', horarioTroca: '19:00' },
-      },
+      plantaoAtual: { operandoAgora: [], proximaRendicao: { colaboradorId: '', horarioTroca: '19:00' } },
       coberturaPercentual: 100,
-      contatoSindico: dados.contatoSindico || 'Síndico Responsável',
-      telefoneSindico: dados.telefoneSindico || '(11) 98765-4321',
-      instrucoesGuarita: dados.instrucoesGuarita || 'Controle rigoroso de portaria.',
-      foto: dados.foto || 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=500&auto=format&fit=crop&q=80',
+      contatoSindico: dados.contatoSindico || '',
+      telefoneSindico: dados.telefoneSindico || '',
+      instrucoesGuarita: dados.instrucoesGuarita || '',
+      foto: dados.foto || undefined,
+      ativo: dados.ativo !== false,
       icone: dados.icone || 'Building2',
       cor: dados.cor || '#3B82F6',
-      latitude: dados.latitude !== undefined && dados.latitude !== null ? dados.latitude : undefined,
-      longitude: dados.longitude !== undefined && dados.longitude !== null ? dados.longitude : undefined,
+      latitude: hasCoords ? dados.latitude : undefined,
+      longitude: hasCoords ? dados.longitude : undefined,
       raioGpsMetros: dados.raioGpsMetros !== undefined ? dados.raioGpsMetros : 150,
       metodoCalibracaoGps: dados.metodoCalibracaoGps || 'manual',
-      calibradoEm: dados.calibradoEm || new Date().toISOString(),
+      calibradoEm: hasCoords ? dados.calibradoEm || new Date().toISOString() : undefined,
       calibradoPrecisaoM: dados.calibradoPrecisaoM,
     };
 
     setCondominios((prev) => [novoCondo, ...prev]);
 
-    // Persistência Completa no Supabase
     const client = getSupabase();
     if (client) {
-      try {
-        const payload: Record<string, any> = {
-          id: newId,
-          nome: novoCondo.nome,
-          tipo: novoCondo.tipo || 'Residencial',
-          cnpj: novoCondo.cnpj || null,
-          contrato_numero: novoCondo.contratoNumero || null,
-          endereco: novoCondo.endereco || 'Endereço não informado',
-          bairro: novoCondo.bairro || 'Centro',
-          cidade: novoCondo.cidade || 'São Paulo - SP',
-          supervisor: novoCondo.supervisor || 'Supervisora Silva',
-          telefone_supervisor: novoCondo.telefoneSupervisor || '(11) 98842-1190',
-          vagas_contratadas: novoCondo.vagasContratadas || 2,
-          status: novoCondo.status || 'operacional',
-          motivo_atencao: novoCondo.motivoAtencao || null,
-          tipo_escala_padrao: novoCondo.tipoEscalaPadrao || '12x36 (07:00 - 19:00)',
-          cobertura_percentual: novoCondo.coberturaPercentual || 100,
-          contato_sindico: novoCondo.contatoSindico || null,
-          telefone_sindico: novoCondo.telefoneSindico || null,
-          instrucoes_guarita: novoCondo.instrucoesGuarita || null,
-          foto_url: novoCondo.foto || null,
-          latitude: novoCondo.latitude !== undefined && novoCondo.latitude !== null ? Number(novoCondo.latitude) : null,
-          longitude: novoCondo.longitude !== undefined && novoCondo.longitude !== null ? Number(novoCondo.longitude) : null,
-          raio_gps_metros: novoCondo.raioGpsMetros || 150,
-          lat: novoCondo.latitude !== undefined && novoCondo.latitude !== null ? Number(novoCondo.latitude) : null,
-          lng: novoCondo.longitude !== undefined && novoCondo.longitude !== null ? Number(novoCondo.longitude) : null,
-          raio_tolerancia_metros: novoCondo.raioGpsMetros || 150,
-          updated_at: new Date().toISOString(),
-        };
-
-        // Salva na tabela autoritativa condominios
-        const { error: cErr } = await client.from('condominios').upsert(payload);
-        if (cErr) {
-          console.warn('Erro ao salvar em condominios no Supabase:', cErr.message);
-        } else {
-          console.info('Condomínio salvo com sucesso no Supabase:', newId);
-        }
-
-        // Espelha na tabela legada postos (apenas colunas existentes)
-        await client.from('postos').upsert({
-          id: newId,
-          nome: novoCondo.nome,
-          tipo: novoCondo.tipo || 'Residencial',
-          cnpj: novoCondo.cnpj || null,
-          endereco: novoCondo.endereco || 'Endereço não informado',
-          bairro: novoCondo.bairro || 'Centro',
-          cidade: novoCondo.cidade || 'São Paulo - SP',
-          supervisor: novoCondo.supervisor || 'Supervisora Silva',
-          status: novoCondo.status || 'operacional',
-          updated_at: new Date().toISOString(),
-        });
-      } catch (err) {
-        console.warn('Erro ao salvar condomínio no Supabase:', err);
-      }
+      await client.from('condominios').upsert({
+        id: newId,
+        empresa_id: empresaInfo.id || 'emp-matriz-principal',
+        nome: novoCondo.nome,
+        tipo: novoCondo.tipo,
+        cnpj: novoCondo.cnpj || null,
+        contrato_numero: novoCondo.contratoNumero || null,
+        endereco: novoCondo.endereco || 'Não informado',
+        bairro: novoCondo.bairro || 'Centro',
+        cidade: novoCondo.cidade || '',
+        supervisor: novoCondo.supervisor,
+        telefone_supervisor: novoCondo.telefoneSupervisor || null,
+        vagas_contratadas: novoCondo.vagasContratadas,
+        status: novoCondo.status,
+        motivo_atencao: novoCondo.motivoAtencao || null,
+        tipo_escala_padrao: novoCondo.tipoEscalaPadrao,
+        cobertura_percentual: novoCondo.coberturaPercentual,
+        contato_sindico: novoCondo.contatoSindico || null,
+        telefone_sindico: novoCondo.telefoneSindico || null,
+        instrucoes_guarita: novoCondo.instrucoesGuarita || null,
+        foto_url: novoCondo.foto || null,
+        ativo: novoCondo.ativo !== false,
+        latitude: hasCoords ? Number(novoCondo.latitude) : null,
+        longitude: hasCoords ? Number(novoCondo.longitude) : null,
+        raio_gps_metros: novoCondo.raioGpsMetros || 150,
+        lat: hasCoords ? Number(novoCondo.latitude) : null,
+        lng: hasCoords ? Number(novoCondo.longitude) : null,
+        raio_tolerancia_metros: novoCondo.raioGpsMetros || 150,
+        icone: novoCondo.icone || 'Building2',
+        cor: novoCondo.cor || '#3B82F6',
+        updated_at: new Date().toISOString(),
+      });
     }
 
-    showToast(`Condomínio ${novoCondo.nome} adicionado e salvo no banco de dados!`);
+    showToast(`Posto ${novoCondo.nome} cadastrado.`);
     closeCondominioModal();
     return true;
   };
@@ -1561,69 +1555,46 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const client = getSupabase();
     if (client) {
-      try {
-        const payload: Record<string, any> = {
-          updated_at: new Date().toISOString(),
-        };
-        if (dados.nome !== undefined) payload.nome = dados.nome;
-        if (dados.tipo !== undefined) payload.tipo = dados.tipo;
-        if (dados.cnpj !== undefined) payload.cnpj = dados.cnpj;
-        if (dados.contratoNumero !== undefined) payload.contrato_numero = dados.contratoNumero;
-        if (dados.endereco !== undefined) payload.endereco = dados.endereco;
-        if (dados.bairro !== undefined) payload.bairro = dados.bairro;
-        if (dados.cidade !== undefined) payload.cidade = dados.cidade;
-        if (dados.supervisor !== undefined) payload.supervisor = dados.supervisor;
-        if (dados.telefoneSupervisor !== undefined) payload.telefone_supervisor = dados.telefoneSupervisor;
-        if (dados.vagasContratadas !== undefined) payload.vagas_contratadas = Number(dados.vagasContratadas);
-        if (dados.status !== undefined) payload.status = dados.status;
-        if (dados.motivoAtencao !== undefined) payload.motivo_atencao = dados.motivoAtencao;
-        if (dados.tipoEscalaPadrao !== undefined) payload.tipo_escala_padrao = dados.tipoEscalaPadrao;
-        if (dados.coberturaPercentual !== undefined) payload.cobertura_percentual = dados.coberturaPercentual;
-        if (dados.contatoSindico !== undefined) payload.contato_sindico = dados.contatoSindico;
-        if (dados.telefoneSindico !== undefined) payload.telefone_sindico = dados.telefoneSindico;
-        if (dados.latitude !== undefined) {
-          payload.latitude = dados.latitude !== null ? Number(dados.latitude) : null;
-          payload.lat = payload.latitude;
-        }
-        if (dados.longitude !== undefined) {
-          payload.longitude = dados.longitude !== null ? Number(dados.longitude) : null;
-          payload.lng = payload.longitude;
-        }
-        if (dados.raioGpsMetros !== undefined) {
-          payload.raio_gps_metros = Number(dados.raioGpsMetros);
-          payload.raio_tolerancia_metros = Number(dados.raioGpsMetros);
-        }
-
-        const { error: updErr } = await client.from('condominios').update(payload).eq('id', id);
-        if (updErr) {
-          console.warn('Erro ao atualizar em condominios no Supabase:', updErr.message);
-        } else {
-          console.info('Condomínio atualizado com sucesso no Supabase:', id);
-        }
-
-        // Atualiza também na tabela legada postos (apenas colunas existentes)
-        await client.from('postos').update({
-          nome: dados.nome || condoAtual.nome,
-          tipo: dados.tipo || condoAtual.tipo,
-          cnpj: dados.cnpj !== undefined ? dados.cnpj : condoAtual.cnpj,
-          endereco: dados.endereco || condoAtual.endereco,
-          bairro: dados.bairro || condoAtual.bairro,
-          cidade: dados.cidade || condoAtual.cidade,
-          supervisor: dados.supervisor || condoAtual.supervisor,
-          status: dados.status || condoAtual.status,
-          updated_at: new Date().toISOString(),
-        }).eq('id', id);
-      } catch (err) {
-        console.warn('Erro ao atualizar condomínio no Supabase:', err);
+      const payload: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (dados.nome !== undefined) payload.nome = dados.nome;
+      if (dados.tipo !== undefined) payload.tipo = dados.tipo;
+      if (dados.cnpj !== undefined) payload.cnpj = dados.cnpj;
+      if (dados.contratoNumero !== undefined) payload.contrato_numero = dados.contratoNumero;
+      if (dados.endereco !== undefined) payload.endereco = dados.endereco;
+      if (dados.bairro !== undefined) payload.bairro = dados.bairro;
+      if (dados.cidade !== undefined) payload.cidade = dados.cidade;
+      if (dados.supervisor !== undefined) payload.supervisor = dados.supervisor;
+      if (dados.telefoneSupervisor !== undefined) payload.telefone_supervisor = dados.telefoneSupervisor;
+      if (dados.vagasContratadas !== undefined) payload.vagas_contratadas = Number(dados.vagasContratadas);
+      if (dados.status !== undefined) payload.status = dados.status;
+      if (dados.ativo !== undefined) payload.ativo = dados.ativo;
+      if (dados.motivoAtencao !== undefined) payload.motivo_atencao = dados.motivoAtencao;
+      if (dados.tipoEscalaPadrao !== undefined) payload.tipo_escala_padrao = dados.tipoEscalaPadrao;
+      if (dados.coberturaPercentual !== undefined) payload.cobertura_percentual = dados.coberturaPercentual;
+      if (dados.contatoSindico !== undefined) payload.contato_sindico = dados.contatoSindico;
+      if (dados.telefoneSindico !== undefined) payload.telefone_sindico = dados.telefoneSindico;
+      if (dados.latitude !== undefined) {
+        payload.latitude = dados.latitude !== null ? Number(dados.latitude) : null;
+        payload.lat = payload.latitude;
       }
+      if (dados.longitude !== undefined) {
+        payload.longitude = dados.longitude !== null ? Number(dados.longitude) : null;
+        payload.lng = payload.longitude;
+      }
+      if (dados.raioGpsMetros !== undefined) {
+        payload.raio_gps_metros = Number(dados.raioGpsMetros);
+        payload.raio_tolerancia_metros = Number(dados.raioGpsMetros);
+      }
+
+      await client.from('condominios').update(payload).eq('id', id);
     }
 
-    showToast(`Condomínio ${dados.nome || condoAtual.nome} atualizado no banco de dados!`);
+    showToast(`Posto ${dados.nome || condoAtual.nome} atualizado.`);
     closeCondominioModal();
     return true;
   };
 
-  // 16. Notificar Tentativa de Bater Ponto Fora do Posto (Anti-Fraude)
+  // 16. Notificar Tentativa Fora de Todos os Postos (SEM mutar condominios/colaboradores!)
   const notificarTentativaForaPosto = async (
     colaborador: Colaborador,
     posto: CondominioPosto,
@@ -1637,13 +1608,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       id: alertaId,
       tipo: 'tentativa_ponto_fora_posto',
       gravidade: 'critica',
-      titulo: `Tentativa de Ponto Fora do Posto (${colaborador.nome})`,
-      descricao: `O colaborador ${colaborador.nome} (${colaborador.funcao}) tentou registrar ponto a ${distanciaM}m de distância do ${posto.nome} (raio máximo: ${posto.raioGpsMetros || 150}m). O ponto foi sumariamente BLOQUEADO.`,
+      titulo: `Tentativa de Ponto Fora dos Postos (${colaborador.nome})`,
+      descricao: `Leitura GPS fora de todos os postos ativos da empresa. Mais próximo: ${posto.nome} (${distanciaM}m; raio ${posto.raioGpsMetros || 150}m).`,
       postoId: posto.id,
       postoNome: posto.nome,
       colaboradorId: colaborador.id,
       colaboradorNome: colaborador.nome,
-      horario: `Hoje às ${agoraHora}`,
+      horario: agoraHora,
       resolvido: false,
       latitudeTentativa: coords?.latitude,
       longitudeTentativa: coords?.longitude,
@@ -1652,106 +1623,62 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setAlertas((prev) => [novoAlerta, ...prev]);
 
-    // Adiciona ao histórico de ocorrências
-    const novaOcorr: Ocorrencia = {
-      id: generateSafeId('ocorr-perimetro'),
-      postoId: posto.id,
-      postoNome: posto.nome,
-      tipo: 'Ponto Divergente',
-      descricao: `[BLOQUEIO DE SEGURANÇA] Tentativa de batida fora do posto por ${colaborador.nome} a ${distanciaM}m da cerca virtual. Coordenadas: ${coords?.latitude?.toFixed(5) || '--'}, ${coords?.longitude?.toFixed(5) || '--'}. Ponto cancelado.`,
-      registradoPor: 'Sistema Anti-Fraude Geofence',
-      dataHora: `Hoje às ${agoraHora}`,
-      urgencia: 'alta',
-      resolvida: false,
-    };
-
-    setOcorrencias((prev) => [novaOcorr, ...prev]);
-
-    // Persistência no Supabase
     const client = getSupabase();
     if (client) {
-      try {
-        // Garante que o posto exista no Supabase (evita erro FK fk_alertas_posto / fk_ocorrencias_posto)
-        await client.from('condominios').upsert({
-          id: posto.id,
-          nome: posto.nome,
-          tipo: posto.tipo || 'Residencial',
-          endereco: posto.endereco || 'Endereço não informado',
-          bairro: posto.bairro || 'Centro',
-          cidade: posto.cidade || 'São Paulo - SP',
-          lat: posto.latitude !== undefined ? Number(posto.latitude) : -23.55052,
-          lng: posto.longitude !== undefined ? Number(posto.longitude) : -46.633308,
-          raio_tolerancia_metros: posto.raioGpsMetros || 150,
-          status: posto.status || 'operacional',
-          vagas_contratadas: posto.vagasContratadas || 2,
-        });
+      await client.from('alertas').insert({
+        id: novoAlerta.id,
+        empresa_id: empresaInfo.id || 'emp-matriz-principal',
+        tipo: novoAlerta.tipo,
+        gravidade: novoAlerta.gravidade,
+        titulo: novoAlerta.titulo,
+        descricao: novoAlerta.descricao,
+        posto_id: posto.id,
+        posto_nome: posto.nome,
+        colaborador_id: colaborador.id,
+        colaborador_nome: colaborador.nome,
+        horario: agoraHora,
+        resolvido: false,
+      });
 
-        // Garante que o colaborador exista no Supabase
-        await client.from('colaboradores').upsert({
-          id: colaborador.id,
-          nome: colaborador.nome,
-          full_name: colaborador.nome,
-          matricula: colaborador.matricula || `TC-${colaborador.id.slice(0, 4)}`,
-          funcao: colaborador.funcao || 'Porteiro',
-          cargo: colaborador.funcao || 'Porteiro',
-          status: 'no_posto',
-          condominio_id: posto.id,
-          role: colaborador.role || 'funcionario',
-        });
-
-        await client.from('alertas').insert({
-          id: novoAlerta.id,
-          tipo: novoAlerta.tipo,
-          gravidade: novoAlerta.gravidade,
-          titulo: novoAlerta.titulo,
-          descricao: novoAlerta.descricao,
-          posto_id: novoAlerta.postoId,
-          posto_nome: novoAlerta.postoNome,
-          colaborador_id: novoAlerta.colaboradorId,
-          colaborador_nome: novoAlerta.colaboradorNome,
-          horario: novoAlerta.horario,
-          resolvido: false,
-        });
-
-        await client.from('ocorrencias').insert({
-          id: novaOcorr.id,
-          posto_id: novaOcorr.postoId,
-          posto_nome: novaOcorr.postoNome,
-          tipo: novaOcorr.tipo,
-          descricao: novaOcorr.descricao,
-          registrado_por: novaOcorr.registradoPor,
-          data_hora: novaOcorr.dataHora,
-          urgencia: novaOcorr.urgencia,
-          resolvida: false,
-        });
-      } catch (err) {
-        console.warn('Erro ao salvar alerta de tentativa fora do posto no Supabase:', err);
-      }
+      await client.from('notificacoes_sistema').insert({
+        empresa_id: empresaInfo.id || 'emp-matriz-principal',
+        destinatario_role: 'supervisor',
+        categoria: 'ponto',
+        titulo: novoAlerta.titulo,
+        mensagem: novoAlerta.descricao,
+        referencia_tipo: 'alerta',
+        referencia_id: novoAlerta.id,
+      });
     }
   };
 
-  // 17. Notificar Ponto em Outro Posto da Empresa (Cobertura de Falta / Posto Divergente)
+  // 17. Notificar Ponto em Outro Posto (Cobertura ou Divergência) — NUNCA muta colaboradores.condominio_id!
   const notificarPontoOutroPostoCobertura = async (
     colaborador: Colaborador,
     postoCadastrado: CondominioPosto,
     postoDetectado: CondominioPosto,
     distanciaM: number,
-    coords?: { latitude: number; longitude: number }
+    coords?: { latitude: number; longitude: number },
+    isProgramada = false
   ): Promise<void> => {
     const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    const alertaId = generateSafeId('alerta-cobertura');
+    const alertaId = generateSafeId('alerta-multiposto');
 
     const novoAlerta: AlertaOperacional = {
       id: alertaId,
-      tipo: 'ponto_posto_cobertura',
-      gravidade: 'moderada',
-      titulo: `Cobertura de Falta / Batida em Outro Posto (${colaborador.nome})`,
-      descricao: `O colaborador ${colaborador.nome} (${colaborador.funcao}), cadastrado no posto ${postoCadastrado.nome}, bateu ponto presencialmente no posto ${postoDetectado.nome} (a ${distanciaM}m de distância). Ponto registrado com sucesso como cobertura de turno.`,
+      tipo: isProgramada ? 'ponto_posto_cobertura' : 'posto_divergente',
+      gravidade: isProgramada ? 'informativa' : 'moderada',
+      titulo: isProgramada
+        ? `Cobertura Programada Executada (${colaborador.nome})`
+        : `Divergência de Posto (${colaborador.nome})`,
+      descricao: isProgramada
+        ? `${colaborador.nome} registrou ponto conforme escala de cobertura em ${postoDetectado.nome} (${distanciaM}m). Posto-base "${postoCadastrado.nome}" preservado.`
+        : `${colaborador.nome} (posto-base: ${postoCadastrado.nome}) registrou ponto presencial em ${postoDetectado.nome} (${distanciaM}m) sem cobertura prévia programada.`,
       postoId: postoDetectado.id,
       postoNome: postoDetectado.nome,
       colaboradorId: colaborador.id,
       colaboradorNome: colaborador.nome,
-      horario: `Hoje às ${agoraHora}`,
+      horario: agoraHora,
       resolvido: false,
       latitudeTentativa: coords?.latitude,
       longitudeTentativa: coords?.longitude,
@@ -1760,542 +1687,315 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setAlertas((prev) => [novoAlerta, ...prev]);
 
-    // Registra ocorrência de cobertura operacional
-    const novaOcorr: Ocorrencia = {
-      id: generateSafeId('ocorr-cobertura'),
-      postoId: postoDetectado.id,
-      postoNome: postoDetectado.nome,
-      tipo: 'Ponto Divergente',
-      descricao: `[COBERTURA DE ESCALA] Colaborador ${colaborador.nome} (${colaborador.funcao}) registrou ponto no posto ${postoDetectado.nome} (Posto de origem: ${postoCadastrado.nome}). Batida validada via GPS multi-postos da empresa.`,
-      registradoPor: 'Sistema GPS Multi-Postos',
-      dataHora: `Hoje às ${agoraHora}`,
-      urgencia: 'media',
-      resolvida: false,
-    };
+    // Nota: quando gravado via RPC registrar_ponto_transacional, o próprio backend já cria notificacoes_sistema.
+    // Mantemos alerta local sincronizado sem sobrescrever condominio_id do colaborador.
+  };
 
-    setOcorrencias((prev) => [novaOcorr, ...prev]);
-
-    // Persistência no Supabase
+  // 18. Alertar gestor sobre postos ativos sem coordenadas configuradas
+  const alertarPostoSemCoordenadas = async (postosSemCoords: CondominioPosto[]): Promise<void> => {
+    if (postosSemCoords.length === 0) return;
     const client = getSupabase();
-    if (client) {
-      try {
-        // Garante que o posto detectado exista no Supabase
-        await client.from('condominios').upsert({
-          id: postoDetectado.id,
-          nome: postoDetectado.nome,
-          tipo: postoDetectado.tipo || 'Residencial',
-          endereco: postoDetectado.endereco || 'Endereço não informado',
-          bairro: postoDetectado.bairro || 'Centro',
-          cidade: postoDetectado.cidade || 'São Paulo - SP',
-          lat: postoDetectado.latitude !== undefined ? Number(postoDetectado.latitude) : -23.55052,
-          lng: postoDetectado.longitude !== undefined ? Number(postoDetectado.longitude) : -46.633308,
-          raio_tolerancia_metros: postoDetectado.raioGpsMetros || 150,
-          status: postoDetectado.status || 'operacional',
-          vagas_contratadas: postoDetectado.vagasContratadas || 2,
-        });
+    const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-        // Garante que o colaborador exista no Supabase
-        await client.from('colaboradores').upsert({
-          id: colaborador.id,
-          nome: colaborador.nome,
-          full_name: colaborador.nome,
-          matricula: colaborador.matricula || `TC-${colaborador.id.slice(0, 4)}`,
-          funcao: colaborador.funcao || 'Porteiro',
-          cargo: colaborador.funcao || 'Porteiro',
-          status: 'no_posto',
-          condominio_id: postoDetectado.id,
-          role: colaborador.role || 'funcionario',
-        });
+    for (const p of postosSemCoords) {
+      const jaExiste = alertas.some((a) => !a.resolvido && a.tipo === 'posto_sem_coordenadas' && a.postoId === p.id);
+      if (jaExiste) continue;
 
+      const alertaId = generateSafeId('alerta-geocalib');
+      const novoAlerta: AlertaOperacional = {
+        id: alertaId,
+        tipo: 'posto_sem_coordenadas',
+        gravidade: 'moderada',
+        titulo: `Posto sem coordenadas GPS (${p.nome})`,
+        descricao: `O posto ativo "${p.nome}" não possui latitude/longitude configuradas para geofence. Calibre o posto na aba Postos.`,
+        postoId: p.id,
+        postoNome: p.nome,
+        horario: agoraHora,
+        resolvido: false,
+      };
+      setAlertas((prev) => [novoAlerta, ...prev]);
+
+      if (client) {
         await client.from('alertas').insert({
-          id: novoAlerta.id,
-          tipo: novoAlerta.tipo,
-          gravidade: novoAlerta.gravidade,
+          id: alertaId,
+          empresa_id: empresaInfo.id || 'emp-matriz-principal',
+          tipo: 'posto_sem_coordenadas',
+          gravidade: 'moderada',
           titulo: novoAlerta.titulo,
           descricao: novoAlerta.descricao,
-          posto_id: novoAlerta.postoId,
-          posto_nome: novoAlerta.postoNome,
-          colaborador_id: novoAlerta.colaboradorId,
-          colaborador_nome: novoAlerta.colaboradorNome,
-          horario: novoAlerta.horario,
+          posto_id: p.id,
+          posto_nome: p.nome,
+          horario: agoraHora,
           resolvido: false,
         });
-
-        await client.from('ocorrencias').insert({
-          id: novaOcorr.id,
-          posto_id: novaOcorr.postoId,
-          posto_nome: novaOcorr.postoNome,
-          tipo: novaOcorr.tipo,
-          descricao: novaOcorr.descricao,
-          registrado_por: novaOcorr.registradoPor,
-          data_hora: novaOcorr.dataHora,
-          urgencia: novaOcorr.urgencia,
-          resolvida: false,
+        await client.from('notificacoes_sistema').insert({
+          empresa_id: empresaInfo.id || 'emp-matriz-principal',
+          destinatario_role: 'supervisor',
+          categoria: 'alerta_config',
+          titulo: novoAlerta.titulo,
+          mensagem: novoAlerta.descricao,
+          referencia_tipo: 'condominio',
+          referencia_id: p.id,
         });
-      } catch (err) {
-        console.warn('Erro ao salvar alerta de cobertura no Supabase:', err);
       }
     }
   };
 
-  // 16. Excluir Condomínio
   const excluirCondominio = async (id: string): Promise<boolean> => {
     const condo = condominios.find((c) => c.id === id);
     if (!condo) return false;
-
     setCondominios((prev) => prev.filter((c) => c.id !== id));
-    setColaboradores((prev) =>
-      prev.map((colab) =>
-        colab.condominioId === id
-          ? { ...colab, condominioId: null, postoNome: 'Matriz - Reserva Central', status: 'folga', motivoStatus: 'Disponível na Reserva' }
-          : colab
-      )
-    );
-
     const client = getSupabase();
     if (client) {
-      try {
-        await client.from('condominios').delete().eq('id', id);
-        await client.from('postos').delete().eq('id', id);
-      } catch (err) {
-        console.warn('Erro ao excluir condomínio no Supabase:', err);
-      }
+      await client.from('condominios').delete().eq('id', id);
     }
-
-    showToast(`Condomínio ${condo.nome} excluído do banco de dados.`);
+    showToast(`Posto ${condo.nome} excluído.`);
     closeCondominioModal();
     return true;
   };
 
-  // ============================================================================
-  // SINCRONIZAÇÃO COMPLETA BIDIRECIONAL COM O SUPABASE
-  // ============================================================================
-  const syncWithSupabase = async () => {
-    setIsSyncing(true);
-    const client = getSupabase();
-    if (!client) {
-      setIsSyncing(false);
-      return;
+  // Coberturas e Notificações
+  const criarCobertura = async (
+    input: Omit<CriarCoberturaInput, 'empresaId' | 'criadoPorNome'>
+  ): Promise<{ success: boolean; message: string }> => {
+    const res = await criarCoberturaProgramada(
+      {
+        ...input,
+        empresaId: empresaInfo.id || 'emp-matriz-principal',
+        exigeAceiteColaborador:
+          input.exigeAceiteColaborador !== undefined
+            ? input.exigeAceiteColaborador
+            : Boolean(empresaInfo.exigeAceiteCobertura),
+        criadoPorNome: actorName,
+      },
+      coberturasProgramadas
+    );
+    if (res.success && res.cobertura) {
+      setCoberturasProgramadas((prev) => [res.cobertura!, ...prev]);
     }
+    showToast(res.message);
+    return { success: res.success, message: res.message };
+  };
 
-    try {
-      // 1. Sincroniza Colaboradores
-      const { data: remoteColabs, error: colabErr } = await client.from('colaboradores').select('*');
-      if (!colabErr && remoteColabs && remoteColabs.length > 0) {
-        setColaboradores(
-          remoteColabs.map((rc: any) => ({
-            id: rc.id,
-            nome: rc.nome || rc.full_name || 'Colaborador',
-            matricula: rc.matricula || `TC-${rc.id.slice(0, 4).toUpperCase()}`,
-            funcao: rc.funcao || rc.cargo || 'Porteiro',
-            condominioId: rc.condominio_id || null,
-            postoNome: 'Matriz - Reserva Central',
-            status: (rc.status as any) || 'no_posto',
-            jornada: rc.jornada || (rc.tipo_jornada ? `${rc.tipo_jornada} (${rc.turno_inicio || '07:00'} - ${rc.turno_fim || '19:00'})` : '12x36 (07:00 - 19:00)'),
-            tipoEscala: (rc.tipo_jornada as any) || '12x36',
-            turno: 'diurno',
-            foto: rc.foto_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-            telefone: rc.telefone || '(11) 99999-0000',
-            cpf: rc.cpf || '000.000.000-00',
-            dataAdmissao: rc.data_admissao || '2026-01-10',
-            bancoHoras: rc.banco_horas !== undefined ? Number(rc.banco_horas) : 0,
-            ultimoPonto: 'Ponto registrado',
-            salarioBase: Number(rc.salario_base) || 2150,
-            rg: rc.rg,
-            dataNascimento: rc.data_nascimento,
-            pis: rc.pis,
-            ctps: rc.ctps,
-            nomeMae: rc.nome_mae,
-            endereco: rc.endereco,
-            turnoInicio: rc.turno_inicio,
-            turnoFim: rc.turno_fim,
-            pix: rc.pix,
-            banco: rc.banco,
-            agencia: rc.agencia,
-            conta: rc.conta,
-            recebeVT: rc.recebe_vt !== undefined ? rc.recebe_vt : true,
-            recebeVR: rc.recebe_vr !== undefined ? rc.recebe_vr : true,
-            valorVR: rc.valor_vr !== undefined && rc.valor_vr !== null ? Number(rc.valor_vr) : 28.5,
-            recebeVA: rc.recebe_va !== undefined ? rc.recebe_va : true,
-            valorVA: rc.valor_va !== undefined && rc.valor_va !== null ? Number(rc.valor_va) : 220,
-            valorExtraFT: rc.valor_extra_ft !== undefined && rc.valor_extra_ft !== null ? Number(rc.valor_extra_ft) : 160,
-            valorBonus: rc.valor_bonus !== undefined && rc.valor_bonus !== null ? Number(rc.valor_bonus) : 0,
-            email: rc.email,
-            senha: rc.senha,
-            role: (rc.role as any) || 'funcionario',
-            primeiroAcessoConcluido: rc.primeiro_acesso_concluido !== undefined ? rc.primeiro_acesso_concluido : false,
-          }))
-        );
-      }
+  const responderCobertura = async (
+    cobertura: CoberturaProgramada,
+    aceitar: boolean,
+    motivoRecusa?: string
+  ): Promise<{ success: boolean; message: string }> => {
+    const res = await responderAceiteCobertura(cobertura, aceitar, motivoRecusa, currentUser?.nome);
+    if (res.success) {
+      setCoberturasProgramadas((prev) =>
+        prev.map((c) =>
+          c.id === cobertura.id
+            ? { ...c, status: res.status, aceiteColaborador: aceitar, recusaMotivo: aceitar ? null : motivoRecusa }
+            : c
+        )
+      );
+    }
+    showToast(res.message);
+    return { success: res.success, message: res.message };
+  };
 
-      // 2. Sincroniza Condomínios (mapeia lat/lng e raio_tolerancia_metros)
-      const { data: remoteCondos } = await client.from('condominios').select('*');
-      if (remoteCondos && remoteCondos.length > 0) {
-        setCondominios(
-          remoteCondos.map((rc: any) => ({
-            id: rc.id,
-            nome: rc.nome || 'Posto Sem Nome',
-            tipo: rc.tipo || 'Residencial',
-            cnpj: rc.cnpj || '00.000.000/0001-00',
-            contratoNumero: rc.contrato_numero || `CT-${rc.id.slice(0, 4)}`,
-            endereco: rc.endereco || 'Endereço não informado',
-            bairro: rc.bairro || 'Centro',
-            cidade: rc.cidade || 'São Paulo - SP',
-            supervisor: rc.supervisor || 'Supervisora Silva',
-            telefoneSupervisor: rc.telefone_supervisor || '(11) 98842-1190',
-            vagasContratadas: rc.vagas_contratadas || 2,
-            status: (rc.status as any) || 'operacional',
-            motivoAtencao: rc.motivo_atencao,
-            tipoEscalaPadrao: rc.tipo_escala_padrao || '12x36 (07:00 - 19:00)',
-            plantaoAtual: {
-              operandoAgora: [],
-              proximaRendicao: { colaboradorId: '', horarioTroca: '19:00' },
-            },
-            coberturaPercentual: rc.cobertura_percentual || 100,
-            contatoSindico: rc.contato_sindico || 'Síndico Responsável',
-            telefoneSindico: rc.telefone_sindico || '(11) 98765-4321',
-            instrucoesGuarita: rc.instrucoes_guarita || 'Controle de portaria.',
-            foto: rc.foto_url || 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=500&auto=format&fit=crop&q=80',
-            latitude: rc.latitude !== undefined && rc.latitude !== null ? Number(rc.latitude) : (rc.lat !== undefined && rc.lat !== null ? Number(rc.lat) : undefined),
-            longitude: rc.longitude !== undefined && rc.longitude !== null ? Number(rc.longitude) : (rc.lng !== undefined && rc.lng !== null ? Number(rc.lng) : undefined),
-            raioGpsMetros: rc.raio_gps_metros || rc.raio_tolerancia_metros || 150,
-            icone: rc.icone || 'Building2',
-            cor: rc.cor || '#3B82F6',
-          }))
-        );
-      }
+  const alterarStatusCobertura = async (
+    cobertura: CoberturaProgramada,
+    novoStatus: 'cancelada' | 'concluida' | 'aprovada',
+    detalhes?: string
+  ): Promise<{ success: boolean; message: string }> => {
+    const res = await atualizarStatusCobertura(cobertura, novoStatus, actorName, detalhes);
+    if (res.success) {
+      setCoberturasProgramadas((prev) =>
+        prev.map((c) => (c.id === cobertura.id ? { ...c, status: novoStatus } : c))
+      );
+    }
+    showToast(res.message);
+    return res;
+  };
 
-      // 3. Sincroniza Pontos Eletrônicos
-      const { data: remotePontos } = await client.from('pontos').select('*').order('created_at', { ascending: false });
-      if (remotePontos && remotePontos.length > 0) {
-        setPontos(
-          remotePontos.map((rp: any) => ({
-            id: rp.id,
-            colaboradorId: rp.colaborador_id,
-            colaboradorNome: rp.colaborador_nome || 'Colaborador',
-            data: rp.data || new Date().toISOString().split('T')[0],
-            entrada1: rp.entrada_1 || '--:--',
-            saida1: rp.saida_1 || '--:--',
-            entrada2: rp.entrada_2 || '--:--',
-            saida2: rp.saida_2 || '--:--',
-            totalHoras: rp.total_horas || '08h 00m',
-            statusPonto: rp.status_ponto || rp.status || 'Regular',
-            localizacaoGPS: rp.localizacao_gps || 'Validado via GPS',
-          }))
-        );
-      }
-
-      // 4. Sincroniza Ocorrências
-      const { data: remoteOcorrs } = await client.from('ocorrencias').select('*').order('created_at', { ascending: false });
-      if (remoteOcorrs && remoteOcorrs.length > 0) {
-        setOcorrencias(
-          remoteOcorrs.map((ro: any) => ({
-            id: ro.id,
-            postoId: ro.posto_id,
-            postoNome: ro.posto_nome || 'Posto Geral',
-            tipo: ro.tipo || 'Posto Descoberto',
-            descricao: ro.descricao,
-            registradoPor: ro.registrado_por || 'Supervisora Silva',
-            dataHora: ro.data_hora || 'Hoje',
-            urgencia: ro.urgencia || 'alta',
-            resolvida: Boolean(ro.resolvida),
-          }))
-        );
-      }
-
-      // 5. Sincroniza Alertas
-      const { data: remoteAlertas } = await client.from('alertas').select('*').order('created_at', { ascending: false });
-      if (remoteAlertas && remoteAlertas.length > 0) {
-        setAlertas(
-          remoteAlertas.map((ra: any) => ({
-            id: ra.id,
-            tipo: ra.tipo || 'posto_descoberto',
-            gravidade: ra.gravidade || 'critica',
-            titulo: ra.titulo,
-            descricao: ra.descricao,
-            postoId: ra.posto_id,
-            postoNome: ra.posto_nome || 'Posto',
-            colaboradorId: ra.colaborador_id,
-            colaboradorNome: ra.colaborador_nome,
-            horario: ra.horario || '07:00',
-            resolvido: Boolean(ra.resolvido),
-            resolvidoPor: ra.resolvido_por,
-            resolvidoEm: ra.resolvido_em,
-          }))
-        );
-      }
-
-      // 6. Sincroniza Holerites
-      const { data: remoteHolerites } = await client.from('holerites').select('*');
-      if (remoteHolerites && remoteHolerites.length > 0) {
-        setHolerites(
-          remoteHolerites.map((rh: any) => ({
-            id: rh.id,
-            colaboradorId: rh.colaborador_id,
-            colaboradorNome: rh.colaborador_nome,
-            matricula: rh.matricula || 'TC-1000',
-            funcao: rh.funcao || 'Porteiro',
-            postoNome: rh.posto_nome || 'Matriz',
-            mesReferencia: rh.mes_referencia || 'Outubro/2026',
-            salarioBase: Number(rh.salario_base) || 2150,
-            adicionalPericulosidade: Number(rh.adicional_periculosidade) || 0,
-            adicionalNoturno: Number(rh.adicional_noturno) || 0,
-            horasExtras50: Number(rh.horas_extras_50) || 0,
-            valorHorasExtras: Number(rh.valor_horas_extras) || 0,
-            descontoINSS: Number(rh.desconto_inss) || 0,
-            descontoFGTS: Number(rh.desconto_fgts) || 0,
-            descontoVT: Number(rh.desconto_vt) || 0,
-            descontoVR: Number(rh.desconto_vr) || 0,
-            bonusAssiduidade: Number(rh.bonus_assiduidade) || 0,
-            bonusAtivo: rh.bonus_ativo !== false,
-            motivoPerdaBonus: rh.motivo_perda_bonus,
-            liquidoReceber: Number(rh.liquido_receber) || 2150,
-            statusEnvio: rh.status_envio || 'Pendente',
-            dataEmissao: rh.data_emissao || new Date().toISOString().split('T')[0],
-          }))
-        );
-      }
-
-      // 7. Sincroniza Atestados
-      const { data: remoteAtestados } = await client.from('atestados').select('*');
-      if (remoteAtestados && remoteAtestados.length > 0) {
-        setAtestados(
-          remoteAtestados.map((ra: any) => ({
-            id: ra.id,
-            colaboradorId: ra.colaborador_id,
-            colaboradorNome: ra.colaborador_nome,
-            matricula: ra.matricula || 'TC-1000',
-            postoNome: ra.posto_nome || 'Posto',
-            medico: ra.medico || 'Dr. Médico',
-            crm: ra.crm || 'CRM 00000',
-            cid: ra.cid || 'Z00.0',
-            dataInicio: ra.data_inicio || new Date().toISOString().split('T')[0],
-            diasAfastamento: Number(ra.dias_afastamento) || 1,
-            status: ra.status || 'Pendente',
-            substitutoAlocadoId: ra.substituto_alocado_id,
-            anexoUrl: ra.anexo_url,
-          }))
-        );
-      }
-
-      // 7. Sincroniza Empresa Matriz
-      const { data: remoteEmpresa } = await client.from('empresa_info').select('*').limit(1).maybeSingle();
-      if (remoteEmpresa) {
-        setEmpresaInfo({
-          razaoSocial: remoteEmpresa.razao_social || empresaInfo.razaoSocial,
-          nomeFantasia: remoteEmpresa.nome_fantasia || empresaInfo.nomeFantasia,
-          cnpj: remoteEmpresa.cnpj || empresaInfo.cnpj,
-          inscricaoEstadual: remoteEmpresa.inscricao_estadual,
-          inscricaoMunicipal: remoteEmpresa.inscricao_municipal,
-          telefone: remoteEmpresa.telefone || empresaInfo.telefone,
-          whatsapp: remoteEmpresa.whatsapp || empresaInfo.whatsapp,
-          email: remoteEmpresa.email || empresaInfo.email,
-          endereco: remoteEmpresa.endereco || empresaInfo.endereco,
-          bairro: remoteEmpresa.bairro || empresaInfo.bairro,
-          cidade: remoteEmpresa.cidade || empresaInfo.cidade,
-          estado: remoteEmpresa.estado || empresaInfo.estado,
-          cep: remoteEmpresa.cep || empresaInfo.cep,
-          responsavelOperacional: remoteEmpresa.responsavel_operacional || empresaInfo.responsavelOperacional,
-          cargoResponsavel: remoteEmpresa.cargo_responsavel || empresaInfo.cargoResponsavel,
-          chavePix: remoteEmpresa.chave_pix,
-          logoUrl: remoteEmpresa.logo_url,
-          apresentacao: remoteEmpresa.apresentacao,
-        });
-      }
-    } catch (err) {
-      console.warn('Sync com Supabase finalizado com avisos:', err);
-    } finally {
-      setIsSyncing(false);
+  const marcarNotificacaoLida = async (notificacaoId: string): Promise<void> => {
+    const nowIso = new Date().toISOString();
+    setNotificacoesSistema((prev) =>
+      prev.map((n) => (n.id === notificacaoId ? { ...n, lida: true, lidaEm: nowIso } : n))
+    );
+    const client = getSupabase();
+    if (client) {
+      await client
+        .from('notificacoes_sistema')
+        .update({ lida: true, lida_em: nowIso })
+        .eq('id', notificacaoId);
     }
   };
 
+  const registrarSolicitacaoCorrecao = async (dados: {
+    colaboradorId: string;
+    colaboradorNome: string;
+    dataPonto: string;
+    tipoCorrecao: SolicitacaoCorrecaoPonto['tipoCorrecao'];
+    justificativa: string;
+  }): Promise<{ success: boolean; message: string }> => {
+    const nova: SolicitacaoCorrecaoPonto = {
+      id: generateSafeId('corr'),
+      colaboradorId: dados.colaboradorId,
+      colaboradorNome: dados.colaboradorNome,
+      dataPonto: dados.dataPonto,
+      tipoCorrecao: dados.tipoCorrecao,
+      justificativa: dados.justificativa.trim(),
+      status: 'pendente',
+      criadoEm: new Date().toISOString(),
+    };
+
+    const client = getSupabase();
+    if (client) {
+      const { error } = await client.from('solicitacoes_correcao_ponto').insert({
+        id: nova.id,
+        empresa_id: empresaInfo.id || 'emp-matriz-principal',
+        colaborador_id: nova.colaboradorId,
+        colaborador_nome: nova.colaboradorNome,
+        data_ponto: nova.dataPonto,
+        tipo_correcao: nova.tipoCorrecao,
+        justificativa: nova.justificativa,
+        status: 'pendente',
+      });
+      if (error) {
+        return { success: false, message: `Erro ao registrar solicitação: ${error.message}` };
+      }
+
+      await client.from('notificacoes_sistema').insert({
+        empresa_id: empresaInfo.id || 'emp-matriz-principal',
+        destinatario_role: 'rh',
+        categoria: 'ponto',
+        titulo: `Solicitação de correção de ponto: ${nova.colaboradorNome}`,
+        mensagem: `Data ${nova.dataPonto} (${nova.tipoCorrecao}): ${nova.justificativa}`,
+        referencia_tipo: 'solicitacao_correcao',
+        referencia_id: nova.id,
+        link_destino: 'rh',
+      });
+    }
+
+    setSolicitacoesCorrecao((prev) => [nova, ...prev]);
+    return { success: true, message: 'Solicitação de ajuste registrada e enviada ao RH/Supervisão.' };
+  };
+
+  const revisarSolicitacaoCorrecao = async (
+    id: string,
+    status: 'aprovado' | 'rejeitado',
+    respostaRH: string
+  ): Promise<boolean> => {
+    setSolicitacoesCorrecao((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, status, respostaRH } : s))
+    );
+    const client = getSupabase();
+    if (client) {
+      await client
+        .from('solicitacoes_correcao_ponto')
+        .update({ status, resposta_rh: respostaRH, updated_at: new Date().toISOString() })
+        .eq('id', id);
+    }
+    showToast(`Solicitação marcada como ${status}.`);
+    return true;
+  };
+
   // ============================================================================
-  // AUTENTICAÇÃO E SESSÃO
+  // AUTENTICAÇÃO ESTRITA VIA SUPABASE AUTH (ZERO HARDCODED PASSWORDS)
   // ============================================================================
   const login = async (
     emailOrCpf: string,
     senhaDigitada: string
   ): Promise<{ success: boolean; message: string }> => {
     const cleanInput = emailOrCpf.trim().toLowerCase();
-    const cleanSenha = senhaDigitada.trim();
+    const cleanSenha = senhaDigitada;
 
     if (!cleanInput) {
-      return { success: false, message: 'Informe seu e-mail, CPF ou matrícula.' };
+      return { success: false, message: 'Informe seu e-mail corporativo cadastrado no Supabase Auth.' };
     }
     if (!cleanSenha) {
       return { success: false, message: 'Informe sua senha de acesso.' };
     }
 
     const supabase = getSupabase();
-
-    // 1. Tenta autenticação real no Supabase Auth se o input contiver e-mail
-    if (supabase && cleanInput.includes('@')) {
-      try {
-        const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
-          email: cleanInput,
-          password: cleanSenha,
-        });
-
-        if (authData?.user && !authErr) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', authData.user.id)
-            .single();
-
-          const role =
-            profile?.role ||
-            authData.user.app_metadata?.role ||
-            (authData.user.email?.includes('adm')
-              ? 'admin'
-              : authData.user.email?.includes('supervisor')
-              ? 'supervisor'
-              : 'funcionario');
-
-          const authUser: UsuarioAuth = {
-            id: authData.user.id,
-            nome:
-              profile?.full_name ||
-              authData.user.user_metadata?.full_name ||
-              authData.user.email?.split('@')[0] ||
-              'Usuário Autenticado',
-            email: authData.user.email || cleanInput,
-            role: role as any,
-            cargo:
-              profile?.cargo ||
-              (role === 'admin'
-                ? 'Administrador Geral'
-                : role === 'supervisor'
-                ? 'Supervisão Geral'
-                : 'Colaborador'),
-            colaboradorId: profile?.colaborador_id || authData.user.id,
-            avatarUrl: profile?.avatar_url || authData.user.user_metadata?.avatar_url,
-          };
-
-          setCurrentUser(authUser);
-          showToast(`Autenticação Supabase confirmada: Bem-vindo(a), ${authUser.nome}!`);
-          return { success: true, message: 'Login realizado com sucesso via Supabase Auth!' };
-        }
-      } catch (authEx) {
-        console.warn('Tentativa com Supabase Auth direcionada para validação integrada:', authEx);
-      }
-    }
-
-    // 2. Administrador Geral Caetano
-    if (
-      cleanInput === 'caetano.adm@turnocerto.com.br' ||
-      cleanInput === 'caetano.adm' ||
-      cleanInput === 'caetano'
-    ) {
-      if (cleanSenha !== '6814871984@Lm') {
-        return { success: false, message: 'Senha incorreta para o Administrador Geral. Verifique as credenciais.' };
-      }
-      const adminUser: UsuarioAuth = {
-        ...ADMIN_CAETANO_USER,
+    if (!supabase) {
+      return {
+        success: false,
+        message: 'Supabase não configurado neste ambiente. Configure a URL e Anon Key nas definições do banco.',
       };
-      setCurrentUser(adminUser);
-      showToast('Bem-vindo Administrador Caetano! Controle total liberado.');
-      return { success: true, message: 'Login de Administrador realizado com sucesso!' };
     }
 
-    // 3. Supervisão Operacional
-    if (
-      cleanInput === 'supervisor@turnocerto.com.br' ||
-      cleanInput === 'supervisor' ||
-      cleanInput === 'larindoleo@gmail.com'
-    ) {
-      if (cleanSenha !== 'Turno@2026') {
-        return { success: false, message: 'Senha incorreta para Supervisão.' };
-      }
-      const targetUser: UsuarioAuth = {
-        ...DEFAULT_USER,
-        email: cleanInput.includes('@') ? cleanInput : 'supervisor@turnocerto.com.br',
+    if (!cleanInput.includes('@')) {
+      return {
+        success: false,
+        message: 'Por segurança, informe seu e-mail corporativo completo (ex: nome@empresa.com.br).',
       };
-      setCurrentUser(targetUser);
-      showToast(`Bem-vinda de volta, ${targetUser.nome}!`);
-      return { success: true, message: 'Login realizado com sucesso!' };
     }
 
-    // 4. Colaboradores cadastrados
-    const colab = colaboradores.find((c) => {
-      const matchEmail = c.email && c.email.toLowerCase() === cleanInput;
-      const matchCpf = c.cpf && c.cpf.replace(/\D/g, '') === cleanInput.replace(/\D/g, '');
-      const matchMatricula = c.matricula && c.matricula.toLowerCase() === cleanInput;
-      const matchNome = c.nome && c.nome.toLowerCase() === cleanInput;
-      return matchEmail || matchCpf || matchMatricula || matchNome;
+    const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+      email: cleanInput,
+      password: cleanSenha,
     });
 
-    if (colab) {
-      const senhaEsperada = colab.senha || 'Turno@2026';
-      if (cleanSenha !== senhaEsperada) {
-        return { success: false, message: 'Senha incorreta. Verifique suas credenciais.' };
-      }
-
-      const authUser: UsuarioAuth = {
-        id: colab.id,
-        nome: colab.nome,
-        email: colab.email || `${colab.nome.toLowerCase().replace(/\s+/g, '.')}@turnocerto.com.br`,
-        role: colab.role || 'funcionario',
-        cargo: colab.funcao,
-        colaboradorId: colab.id,
-        avatarUrl: colab.foto,
-        postoNome: colab.postoNome,
+    if (authErr || !authData?.user) {
+      return {
+        success: false,
+        message: authErr?.message === 'Invalid login credentials'
+          ? 'E-mail ou senha inválidos no Supabase Auth.'
+          : authErr?.message || 'Falha ao autenticar no Supabase Auth.',
       };
-
-      setCurrentUser(authUser);
-      showToast(`Olá, ${colab.nome}! Painel liberado.`);
-      return { success: true, message: 'Login realizado com sucesso!' };
     }
 
-    return { success: false, message: 'Usuário não localizado. Verifique e-mail, CPF ou matrícula.' };
+    await syncSessionUser(authData.user);
+    return { success: true, message: 'Autenticação confirmada com sucesso.' };
   };
 
-  const logout = () => {
+  const logout = async () => {
+    const supabase = getSupabase();
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
     setCurrentUser(null);
-    showToast('Você saiu do sistema com sucesso.');
+    setCondominios([]);
+    setColaboradores([]);
+    setAlertas([]);
+    setOcorrencias([]);
+    setHolerites([]);
+    setPontos([]);
+    setPontoEventos([]);
+    setCoberturasProgramadas([]);
+    setDocumentoSolicitacoes([]);
+    setColaboradorDocumentos([]);
+    setNotificacoesSistema([]);
+    showToast('Sessão encerrada com segurança.');
   };
 
   const trocarSenha = async (
     senhaAtual: string,
     novaSenha: string
   ): Promise<{ success: boolean; message: string }> => {
-    if (!novaSenha || novaSenha.trim().length < 6) {
-      return { success: false, message: 'A nova senha deve ter no mínimo 6 caracteres.' };
+    if (!novaSenha || novaSenha.trim().length < 8) {
+      return { success: false, message: 'A nova senha deve ter no mínimo 8 caracteres.' };
+    }
+    const supabase = getSupabase();
+    if (!supabase || !currentUser?.email) {
+      return { success: false, message: 'Sessão Supabase Auth ativa necessária para alterar senha.' };
     }
 
-    const cleanNova = novaSenha.trim();
-
-    if (currentUser) {
-      const updatedUser = { ...currentUser, senha: cleanNova };
-      setCurrentUser(updatedUser);
+    if (!senhaAtual.trim()) {
+      return { success: false, message: 'Informe sua senha atual para confirmar a alteração.' };
     }
 
-    const targetId = currentUser?.colaboradorId || currentUser?.id;
-    if (targetId) {
-      setColaboradores((prev) =>
-        prev.map((c) =>
-          c.id === targetId || (currentUser?.email && c.email === currentUser.email)
-            ? { ...c, senha: cleanNova }
-            : c
-        )
-      );
-
-      const client = getSupabase();
-      if (client) {
-        try {
-          await client.from('colaboradores').update({ senha: cleanNova }).eq('id', targetId);
-          if (currentUser?.email) {
-            await client.from('colaboradores').update({ senha: cleanNova }).eq('email', currentUser.email);
-          }
-        } catch (err) {
-          console.warn('Erro ao atualizar senha no Supabase:', err);
-        }
-      }
+    const { error: reauthErr } = await supabase.auth.signInWithPassword({
+      email: currentUser.email,
+      password: senhaAtual,
+    });
+    if (reauthErr) {
+      return { success: false, message: 'Senha atual incorreta.' };
     }
 
-    showToast('Senha alterada e atualizada no banco com sucesso!');
+    const { error: updErr } = await supabase.auth.updateUser({ password: novaSenha.trim() });
+    if (updErr) {
+      return { success: false, message: `Erro ao atualizar senha no Supabase Auth: ${updErr.message}` };
+    }
+
+    showToast('Senha alterada com segurança no Supabase Auth.');
     setTrocarSenhaModalOpen(false);
-    return { success: true, message: 'Senha alterada com sucesso!' };
+    return { success: true, message: 'Senha atualizada com sucesso.' };
   };
 
   const openRedefinirSenhaModal = (colab: Colaborador) => {
@@ -2305,132 +2005,80 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const redefinirSenhaColaborador = async (
     colaboradorId: string,
-    novaSenha: string,
+    _novaSenha: string,
     supervisor?: { id: string; nome: string }
-  ): Promise<{ success: boolean; message: string; novaSenhaGerada?: string }> => {
-    if (!novaSenha || novaSenha.trim().length < 6) {
-      return { success: false, message: 'A nova senha deve ter no mínimo 6 caracteres.' };
+  ): Promise<{ success: boolean; message: string }> => {
+    const colab = colaboradores.find((c) => c.id === colaboradorId);
+    const supabase = getSupabase();
+
+    if (!colab?.email) {
+      return {
+        success: false,
+        message: 'Colaborador não possui e-mail corporativo cadastrado para envio do link de redefinição do Supabase Auth.',
+      };
     }
 
-    const cleanNova = novaSenha.trim();
-    const sup =
-      supervisor ||
-      (currentUser
-        ? { id: currentUser.id, nome: currentUser.nome }
-        : { id: 'usr-supervisor', nome: 'Supervisor Operacional' });
-
-    let colabNome = 'Colaborador';
-    setColaboradores((prev) =>
-      prev.map((c) => {
-        if (c.id === colaboradorId) {
-          colabNome = c.nome;
-          return { ...c, senha: cleanNova };
-        }
-        return c;
-      })
-    );
-
-    // Persiste no Supabase
-    const client = getSupabase();
-    if (client) {
-      try {
-        await client
-          .from('colaboradores')
-          .update({
-            senha: cleanNova,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', colaboradorId);
-      } catch (err) {
-        console.warn('Erro ao atualizar senha no Supabase:', err);
+    if (supabase) {
+      const { error } = await supabase.auth.resetPasswordForEmail(colab.email, {
+        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+      });
+      if (error) {
+        return { success: false, message: `Erro ao disparar e-mail de redefinição: ${error.message}` };
       }
+
+      const supNome = supervisor?.nome || actorName;
+      const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      await supabase
+        .from('alertas')
+        .update({ resolvido: true, resolvido_por: supNome, resolvido_em: agoraHora })
+        .eq('colaborador_id', colaboradorId)
+        .eq('tipo', 'solicitacao_senha');
+
+      setAlertas((prev) =>
+        prev.map((a) =>
+          a.colaboradorId === colaboradorId && a.tipo === 'solicitacao_senha'
+            ? { ...a, resolvido: true, resolvidoPor: supNome, resolvidoEm: agoraHora }
+            : a
+        )
+      );
     }
 
-    // Marca qualquer alerta de esquecimento de senha deste colaborador como resolvido
-    const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    setAlertas((prev) =>
-      prev.map((a) =>
-        a.colaboradorId === colaboradorId && a.tipo === 'solicitacao_senha'
-          ? { ...a, resolvido: true, resolvidoPor: sup.nome, resolvidoEm: agoraHora }
-          : a
-      )
-    );
-
-    showToast(`Senha de ${colabNome} redefinida com sucesso!`);
-    return { success: true, message: 'Senha redefinida com sucesso!', novaSenhaGerada: cleanNova };
+    showToast(`Link oficial de recuperação enviado para ${colab.email}.`);
+    return {
+      success: true,
+      message: `E-mail de redefinição enviado via Supabase Auth para ${colab.email}.`,
+    };
   };
 
   const solicitarAjudaSenha = async (
-    identificador: string,
-    contatoTelefone?: string,
-    observacao?: string
+    identificador: string
   ): Promise<{ success: boolean; message: string; colaboradorLocalizado?: Colaborador }> => {
     if (!identificador || !identificador.trim()) {
-      return { success: false, message: 'Informe seu CPF, e-mail ou matrícula.' };
+      return { success: false, message: 'Informe seu e-mail corporativo cadastrado.' };
     }
 
     const cleanInput = identificador.trim().toLowerCase();
-    const cleanDigits = identificador.replace(/\D/g, '');
+    const supabase = getSupabase();
 
-    const colab = colaboradores.find((c) => {
-      const mEmail = c.email && c.email.toLowerCase() === cleanInput;
-      const mCpf = c.cpf && c.cpf.replace(/\D/g, '') === cleanDigits && cleanDigits.length >= 8;
-      const mMatricula = c.matricula && c.matricula.toLowerCase() === cleanInput;
-      const mNome = c.nome && c.nome.toLowerCase().includes(cleanInput) && cleanInput.length >= 4;
-      return mEmail || mCpf || mMatricula || mNome;
-    });
-
-    const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    const alertaId = `alerta-senha-${colab?.id || 'anon'}-${Date.now()}`;
-
-    const novoAlerta: AlertaOperacional = {
-      id: alertaId,
-      tipo: 'solicitacao_senha',
-      gravidade: 'critica',
-      titulo: '🔑 Solicitação de Ajuda com Senha / Acesso',
-      descricao: colab
-        ? `O colaborador ${colab.nome} (Matrícula: ${colab.matricula || 'N/A'}, Posto: ${colab.postoNome || 'N/A'}) esqueceu sua senha e precisa de uma nova senha provisória. Contato: ${contatoTelefone || colab.telefone || 'N/A'}.${observacao ? ` Mensagem: "${observacao}"` : ''}`
-        : `Usuário informou esquecimento de senha para o identificador "${identificador}". Contato: ${contatoTelefone || 'N/A'}.${observacao ? ` Mensagem: "${observacao}"` : ''}`,
-      postoId: colab?.condominioId || '',
-      postoNome: colab?.postoNome || 'Geral',
-      colaboradorId: colab?.id,
-      colaboradorNome: colab?.nome || identificador,
-      horario: agoraHora,
-      resolvido: false,
-    };
-
-    setAlertas((prev) => [novoAlerta, ...prev]);
-
-    const client = getSupabase();
-    if (client) {
-      try {
-        await client.from('alertas').insert({
-          id: alertaId,
-          tipo: 'solicitacao_senha',
-          gravidade: 'critica',
-          titulo: novoAlerta.titulo,
-          descricao: novoAlerta.descricao,
-          posto_id: novoAlerta.postoId || null,
-          colaborador_id: novoAlerta.colaboradorId || null,
-          created_at: new Date().toISOString(),
-          resolvido: false,
-        });
-      } catch (err) {
-        console.warn('Erro ao salvar alerta no Supabase:', err);
+    if (supabase && cleanInput.includes('@')) {
+      const { error } = await supabase.auth.resetPasswordForEmail(cleanInput, {
+        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+      });
+      if (!error) {
+        return {
+          success: true,
+          message: `Se ${cleanInput} estiver cadastrado no Supabase Auth, você receberá o link oficial de redefinição por e-mail.`,
+        };
       }
     }
 
     return {
       success: true,
-      message: 'Solicitação registrada! O supervisor foi notificado e pode liberar sua nova senha.',
-      colaboradorLocalizado: colab,
+      message: 'Entre em contato com seu supervisor ou RH para solicitar a liberação de recuperação de acesso.',
     };
   };
 
-  // ============================================================================
-  // MÉTODOS DE AUTORIZAÇÃO E GESTÃO DE BIOMETRIA FACIAL
-  // ============================================================================
-
+  // Biometria Facial
   const solicitarCadastroFacial = async (
     colaborador: Colaborador,
     motivo: string,
@@ -2440,25 +2088,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const res = await solicitarCadastroBiometria(colaborador, motivo, tipo);
       if (res.success && res.solicitacao) {
         setSolicitacoesBiometria((prev) => [res.solicitacao, ...prev.filter((s) => s.id !== res.solicitacao.id)]);
-
-        // Dispara Alerta Operacional no painel de Notificações do Administrador / Supervisor
         const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
         const novoAlerta: AlertaOperacional = {
           id: `alerta-bio-${res.solicitacao.id}`,
           tipo: 'solicitacao_biometria',
           gravidade: 'moderada',
           titulo: 'Solicitação de Biometria Facial',
-          descricao: `${colaborador.nome} (${colaborador.funcao} - ${colaborador.postoNome || 'Portaria Principal'}) aguarda autorização para ${tipo === 'primeiro_cadastro' ? 'primeiro cadastro' : 'recadastro'} facial. Motivo: "${motivo}"`,
+          descricao: `${colaborador.nome} (${colaborador.funcao}) aguarda autorização para cadastro facial. Motivo: "${motivo}"`,
           postoId: colaborador.condominioId || '',
-          postoNome: colaborador.postoNome || 'Portaria Principal',
+          postoNome: colaborador.postoNome || 'Posto',
           colaboradorId: colaborador.id,
           colaboradorNome: colaborador.nome,
           horario: agoraHora,
           resolvido: false,
         };
         setAlertas((prev) => [novoAlerta, ...prev.filter((a) => a.id !== novoAlerta.id)]);
-
-        showToast('Solicitação de biometria facial enviada ao supervisor com sucesso!');
+        showToast('Solicitação de biometria facial enviada ao supervisor.');
         return { success: true, message: 'Solicitação cadastrada e enviada à supervisão.' };
       }
       return { success: false, message: res.message || 'Falha ao solicitar biometria.' };
@@ -2474,14 +2119,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     supervisor?: UsuarioAuth | { id: string; nome: string },
     validadeHoras: number = 48
   ): Promise<{ success: boolean; message: string }> => {
-    const sup = supervisor || currentUser || DEFAULT_USER;
+    const sup = supervisor || currentUser;
+    if (!sup) return { success: false, message: 'Sessão de supervisor necessária.' };
     const res = await aprovarBiometriaService(solicitacaoId, sup, validadeHoras);
     if (res.success && res.solicitacao) {
-      setSolicitacoesBiometria((prev) =>
-        prev.map((s) => (s.id === solicitacaoId ? res.solicitacao! : s))
-      );
-
-      // Marca o alerta correspondente como resolvido
+      setSolicitacoesBiometria((prev) => prev.map((s) => (s.id === solicitacaoId ? res.solicitacao! : s)));
       const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       setAlertas((prev) =>
         prev.map((a) =>
@@ -2490,8 +2132,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             : a
         )
       );
-
-      showToast(`Autorização aprovada com sucesso! Válida por ${validadeHoras} horas.`);
+      showToast(`Autorização aprovada por ${validadeHoras}h.`);
       return { success: true, message: 'Solicitação aprovada e token gerado.' };
     }
     showToast(res.message);
@@ -2503,14 +2144,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     justificativa: string,
     supervisor?: UsuarioAuth | { id: string; nome: string }
   ): Promise<{ success: boolean; message: string }> => {
-    const sup = supervisor || currentUser || DEFAULT_USER;
+    const sup = supervisor || currentUser;
+    if (!sup) return { success: false, message: 'Sessão de supervisor necessária.' };
     const res = await rejeitarBiometriaService(solicitacaoId, justificativa, sup);
     if (res.success && res.solicitacao) {
-      setSolicitacoesBiometria((prev) =>
-        prev.map((s) => (s.id === solicitacaoId ? res.solicitacao! : s))
-      );
-
-      // Marca o alerta como resolvido
+      setSolicitacoesBiometria((prev) => prev.map((s) => (s.id === solicitacaoId ? res.solicitacao! : s)));
       const agoraHora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       setAlertas((prev) =>
         prev.map((a) =>
@@ -2519,9 +2157,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             : a
         )
       );
-
       showToast('Solicitação de biometria rejeitada.');
-      return { success: true, message: 'Solicitação rejeitada com justificativa.' };
+      return { success: true, message: 'Solicitação rejeitada.' };
     }
     showToast(res.message);
     return { success: false, message: res.message };
@@ -2548,6 +2185,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return getUltimaBiometriaService(colaboradorId);
   };
 
+  // Preserve unused import check cleanly
+  void saveLocalSolicitacoesBiometria;
+
   return (
     <AppContext.Provider
       value={{
@@ -2560,8 +2200,25 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         alertas,
         ocorrencias,
         holerites,
+        setHolerites,
         pontos,
+        pontoEventos,
+        setPontoEventos,
         atestados,
+        coberturasProgramadas,
+        setCoberturasProgramadas,
+        documentoSolicitacoes,
+        setDocumentoSolicitacoes,
+        colaboradorDocumentos,
+        setColaboradorDocumentos,
+        documentoHistorico,
+        holeriteLotes,
+        setHoleriteLotes,
+        holeriteEventos,
+        notificacoesSistema,
+        setNotificacoesSistema,
+        solicitacoesCorrecao,
+        setSolicitacoesCorrecao,
         filterEquipeStatus,
         setFilterEquipeStatus,
         filterEquipeFuncao,
@@ -2620,10 +2277,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         registrarPonto,
         notificarTentativaForaPosto,
         notificarPontoOutroPostoCobertura,
+        alertarPostoSemCoordenadas,
+        criarCobertura,
+        responderCobertura,
+        alterarStatusCobertura,
+        marcarNotificacaoLida,
+        registrarSolicitacaoCorrecao,
+        revisarSolicitacaoCorrecao,
         toastMessage,
         showToast,
         syncWithSupabase,
         isSyncing,
+        authLoading,
         currentUser,
         setCurrentUser,
         login,

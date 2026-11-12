@@ -59,6 +59,7 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
   const isEditing = !!colaboradorParaEditar;
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [status, setStatus] = useState<StatusColaborador>('no_posto');
 
   // CEP Lookup States
@@ -169,7 +170,6 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
         telefone: '',
         dataNascimento: '',
         email: '',
-        senha: 'Turno@2026',
         role: 'funcionario',
         pis: '',
         ctps: '',
@@ -204,6 +204,7 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
       setCepError(null);
     }
     setCurrentStep(1);
+    setConfirmDelete(false);
     setErrors({});
   }, [colaboradorParaEditar, isOpen]);
 
@@ -410,14 +411,16 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
 
   const handleDelete = async () => {
     if (!colaboradorParaEditar) return;
-    if (window.confirm(`Tem certeza que deseja excluir o colaborador ${colaboradorParaEditar.nome}?`)) {
-      setIsSubmitting(true);
-      try {
-        await excluirFuncionario(colaboradorParaEditar.id);
-        onClose();
-      } finally {
-        setIsSubmitting(false);
-      }
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await excluirFuncionario(colaboradorParaEditar.id);
+      onClose();
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -1301,15 +1304,35 @@ export const CadastroFuncionarioModal: React.FC<CadastroFuncionarioModalProps> =
               )}
 
               {isEditing && (
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-red-950/40 hover:bg-red-900/50 border border-red-500/30 text-red-400 hover:text-red-300 text-xs font-semibold transition-colors"
-                  title="Excluir Colaborador"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Excluir</span>
-                </button>
+                confirmDelete ? (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(false)}
+                      className="px-2.5 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold cursor-pointer"
+                    >
+                      Não
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmitting}
+                      onClick={handleDelete}
+                      className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+                    >
+                      Confirmar Exclusão
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleDelete}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-red-950/40 hover:bg-red-900/50 border border-red-500/30 text-red-400 hover:text-red-300 text-xs font-semibold transition-colors cursor-pointer"
+                    title="Excluir Colaborador"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Excluir</span>
+                  </button>
+                )
               )}
             </div>
 

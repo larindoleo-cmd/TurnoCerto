@@ -1,257 +1,260 @@
 /**
  * TurnoCerto - Document Service
- * Emissão de Holerites Digitais, comprovantes em PDF e consulta de documentos funcionais
+ * Geração real de PDF binário (%PDF-) com pdf-lib para Holerites e Comprovantes de Ponto,
+ * cálculo de integridade SHA-256 e download seguro sem window.open() ou HTML disfarçado.
  */
 
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { HoleriteRegistro, EmpresaInfo, Colaborador } from '../types';
 
-/**
- * Gera e realiza o download do demonstrativo de pagamento (Holerite) em formato para impressão/PDF
- */
-export function downloadHoleritePDF(
-  holerite: HoleriteRegistro,
-  colaborador: Colaborador,
-  empresa: EmpresaInfo
-): void {
-  const htmlContent = `
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <title>Holerite - ${holerite.mesReferencia} - ${holerite.colaboradorNome}</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 24px;
-      color: #1e293b;
-      background: #ffffff;
-      font-size: 12px;
-    }
-    .header {
-      border-bottom: 2px solid #0f172a;
-      padding-bottom: 12px;
-      margin-bottom: 16px;
-      display: flex;
-      justify-content: space-between;
-    }
-    .company-title {
-      font-size: 16px;
-      font-weight: bold;
-      color: #0f172a;
-    }
-    .badge {
-      font-size: 11px;
-      background: #e2e8f0;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-weight: bold;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      margin-bottom: 16px;
-      background: #f8fafc;
-      padding: 12px;
-      border-radius: 6px;
-      border: 1px solid #e2e8f0;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-bottom: 16px;
-    }
-    th, td {
-      border: 1px solid #cbd5e1;
-      padding: 8px 10px;
-      text-align: left;
-    }
-    th {
-      background: #f1f5f9;
-      font-weight: bold;
-    }
-    .text-right {
-      text-align: right;
-    }
-    .total-box {
-      background: #0f172a;
-      color: #ffffff;
-      padding: 14px;
-      border-radius: 6px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 14px;
-      font-weight: bold;
-      margin-top: 16px;
-    }
-    .footer {
-      margin-top: 40px;
-      border-top: 1px dashed #94a3b8;
-      padding-top: 12px;
-      font-size: 10px;
-      text-align: center;
-      color: #64748b;
-    }
-    @media print {
-      body { padding: 0; }
-    }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <div>
-      <div class="company-title">${empresa.razaoSocial}</div>
-      <div>CNPJ: ${empresa.cnpj} · Tel: ${empresa.telefone}</div>
-      <div>${empresa.cidade} - ${empresa.estado}</div>
-    </div>
-    <div style="text-align: right;">
-      <div class="badge">RECIBO DE PAGAMENTO DE SALÁRIO</div>
-      <div style="font-weight: bold; margin-top: 4px;">Competência: ${holerite.mesReferencia}</div>
-    </div>
-  </div>
+export interface GeneratedPdfResult {
+  bytes: Uint8Array;
+  sha256: string;
+  fileName: string;
+}
 
-  <div class="grid">
-    <div>
-      <strong>Colaborador:</strong> ${holerite.colaboradorNome}<br>
-      <strong>Matrícula:</strong> ${holerite.matricula}<br>
-      <strong>Cargo / Função:</strong> ${holerite.funcao}<br>
-      <strong>CPF:</strong> ${colaborador.cpf || '***.***.***-**'}
-    </div>
-    <div>
-      <strong>Posto de Alocação:</strong> ${holerite.postoNome}<br>
-      <strong>Data de Emissão:</strong> ${holerite.dataEmissao}<br>
-      <strong>Situação:</strong> ${holerite.statusEnvio}<br>
-      <strong>Autenticação Digital:</strong> CLT nº 5.452 / Portaria MTE
-    </div>
-  </div>
+function sanitizePdfText(input: string | undefined | null): string {
+  // WinAnsi fallback seguro para StandardFonts Helvetica (preserva acentos latinos comuns e substitui símbolos fora WinAnsi)
+  return (input || '')
+    .replace(/[\u2014\u2013]/g, '-')
+    .replace(/[\u2022\u00b7]/g, '-')
+    .replace(/[^\x20-\x7E\u00A0-\u00FF]/g, ' ');
+}
 
-  <table>
-    <thead>
-      <tr>
-        <th>Cód.</th>
-        <th>Descrição das Verbas</th>
-        <th class="text-right">Referência</th>
-        <th class="text-right">Proventos (R$)</th>
-        <th class="text-right">Descontos (R$)</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>001</td>
-        <td>Salário Base Mensal</td>
-        <td class="text-right">30 Dias</td>
-        <td class="text-right">${holerite.salarioBase.toFixed(2)}</td>
-        <td class="text-right">-</td>
-      </tr>
-      ${
-        holerite.adicionalPericulosidade > 0
-          ? `<tr>
-              <td>015</td>
-              <td>Adicional de Periculosidade CLT</td>
-              <td class="text-right">30%</td>
-              <td class="text-right">${holerite.adicionalPericulosidade.toFixed(2)}</td>
-              <td class="text-right">-</td>
-            </tr>`
-          : ''
-      }
-      ${
-        holerite.valorHorasExtras > 0
-          ? `<tr>
-              <td>020</td>
-              <td>Horas Extras 50%</td>
-              <td class="text-right">${holerite.horasExtras50}h</td>
-              <td class="text-right">${holerite.valorHorasExtras.toFixed(2)}</td>
-              <td class="text-right">-</td>
-            </tr>`
-          : ''
-      }
-      ${
-        holerite.bonusAssiduidade
-          ? `<tr>
-              <td>035</td>
-              <td>Prêmio Assiduidade e Pontualidade</td>
-              <td class="text-right">100%</td>
-              <td class="text-right">${holerite.bonusAssiduidade.toFixed(2)}</td>
-              <td class="text-right">-</td>
-            </tr>`
-          : ''
-      }
-      <tr>
-        <td>101</td>
-        <td>INSS - Previdência Social</td>
-        <td class="text-right">Tabela CLT</td>
-        <td class="text-right">-</td>
-        <td class="text-right">${holerite.descontoINSS.toFixed(2)}</td>
-      </tr>
-      <tr>
-        <td>105</td>
-        <td>Vale Transporte (Desconto Legal)</td>
-        <td class="text-right">6% Base</td>
-        <td class="text-right">-</td>
-        <td class="text-right">${holerite.descontoVT.toFixed(2)}</td>
-      </tr>
-      <tr>
-        <td>108</td>
-        <td>Vale Refeição / Alimentação (Coparticipação)</td>
-        <td class="text-right">CCT</td>
-        <td class="text-right">-</td>
-        <td class="text-right">${holerite.descontoVR.toFixed(2)}</td>
-      </tr>
-      <tr>
-        <td>901</td>
-        <td>FGTS do Mês (Depósito informativo)</td>
-        <td class="text-right">8.00%</td>
-        <td class="text-right" colspan="2" style="color: #64748b; font-size: 11px;">R$ ${holerite.descontoFGTS.toFixed(2)} (Recolhido em conta vinculada)</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <div class="total-box">
-    <span>VALOR LÍQUIDO A RECEBER:</span>
-    <span style="font-size: 18px; color: #4ade80;">R$ ${holerite.liquidoReceber.toFixed(2)}</span>
-  </div>
-
-  <div style="margin-top: 30px; display: flex; justify-content: space-between; gap: 20px;">
-    <div style="flex: 1; border-top: 1px solid #94a3b8; text-align: center; padding-top: 8px;">
-      ${empresa.razaoSocial}<br>
-      <span style="font-size: 10px; color: #64748b;">Empregador</span>
-    </div>
-    <div style="flex: 1; border-top: 1px solid #94a3b8; text-align: center; padding-top: 8px;">
-      ${holerite.colaboradorNome}<br>
-      <span style="font-size: 10px; color: #64748b;">Assinatura Digital do Colaborador</span>
-    </div>
-  </div>
-
-  <div class="footer">
-    Comprovante oficial emitido pelo TurnoCerto Software de Gestão de Escalas e RH Terceirizado.<br>
-    Identificador Único: HOL-${holerite.id} · Certificação em conformidade com as exigências do eSocial e MTE.
-  </div>
-</body>
-</html>
-  `;
-
-  const blob = new Blob([htmlContent], { type: 'text/html' });
-  const url = URL.createObjectURL(blob);
-  const win = window.open(url, '_blank');
-  if (win) {
-    win.onload = () => {
-      win.print();
-    };
-  } else {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Holerite_${holerite.mesReferencia.replace('/', '_')}_${colaborador.matricula}.html`;
-    a.click();
+export async function computeSha256Hex(bytes: Uint8Array): Promise<string> {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    const digest = await crypto.subtle.digest('SHA-256', copy.buffer);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
   }
+  // Fallback determinístico em ambientes sem WebCrypto
+  let hash = 2166136261;
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i];
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+export function triggerBrowserPdfDownload(bytes: Uint8Array, fileName: string): void {
+  if (typeof document === 'undefined') return;
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const blob = new Blob([copy.buffer], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1500);
 }
 
 /**
- * Emite e gera o Comprovante Oficial de Registro de Ponto em formato PDF / Imprimível
- * em estrita conformidade com a Portaria MTE nº 671/2021 e CLT.
+ * Gera bytes binários reais de PDF (%PDF-1.x) para Holerite (sem HTML falso e sem ICP-Brasil enganoso).
  */
-export function downloadComprovantePontoPDF(
+export async function generateHoleritePdfBytes(
+  holerite: HoleriteRegistro,
+  colaborador: Pick<Colaborador, 'nome' | 'matricula' | 'cpf' | 'funcao'>,
+  empresa: Pick<EmpresaInfo, 'razaoSocial' | 'cnpj' | 'telefone' | 'cidade' | 'estado'>
+): Promise<GeneratedPdfResult> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([595.28, 841.89]); // A4
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  const dark = rgb(0.06, 0.09, 0.16);
+  const muted = rgb(0.39, 0.45, 0.55);
+  const accent = rgb(0.11, 0.31, 0.85);
+  const green = rgb(0.02, 0.47, 0.34);
+  const red = rgb(0.72, 0.11, 0.11);
+  const border = rgb(0.82, 0.86, 0.91);
+
+  let y = 790;
+  const left = 44;
+  const right = 551;
+
+  // Cabeçalho
+  page.drawText(sanitizePdfText(empresa.razaoSocial), { x: left, y, size: 13, font: fontBold, color: dark });
+  page.drawText('DEMONSTRATIVO DE PAGAMENTO', { x: 350, y, size: 11, font: fontBold, color: accent });
+  y -= 16;
+  page.drawText(sanitizePdfText(`CNPJ: ${empresa.cnpj} | Tel: ${empresa.telefone} | ${empresa.cidade} - ${empresa.estado}`), {
+    x: left,
+    y,
+    size: 8.5,
+    font: fontRegular,
+    color: muted,
+  });
+  page.drawText(sanitizePdfText(`Competencia: ${holerite.mesReferencia} (v${holerite.versao || 1})`), {
+    x: 350,
+    y,
+    size: 9,
+    font: fontBold,
+    color: dark,
+  });
+
+  y -= 14;
+  page.drawLine({ start: { x: left, y }, end: { x: right, y }, thickness: 1.5, color: dark });
+  y -= 20;
+
+  // Dados do colaborador
+  page.drawText(sanitizePdfText(`Colaborador: ${holerite.colaboradorNome}`), { x: left, y, size: 9.5, font: fontBold, color: dark });
+  page.drawText(sanitizePdfText(`Matricula: ${holerite.matricula}`), { x: 350, y, size: 9.5, font: fontRegular, color: dark });
+  y -= 14;
+  page.drawText(sanitizePdfText(`Cargo: ${holerite.funcao} | Posto: ${holerite.postoNome}`), { x: left, y, size: 9, font: fontRegular, color: dark });
+  page.drawText(sanitizePdfText(`CPF: ${colaborador.cpf || '***.***.***-**'}`), { x: 350, y, size: 9, font: fontRegular, color: dark });
+  y -= 14;
+  page.drawText(sanitizePdfText(`Emissao: ${holerite.dataEmissao} | Situacao: ${holerite.statusEnvio}`), {
+    x: left,
+    y,
+    size: 8.5,
+    font: fontRegular,
+    color: muted,
+  });
+
+  if (holerite.motivoRetificacao) {
+    y -= 14;
+    page.drawText(sanitizePdfText(`Retificacao: ${holerite.motivoRetificacao}`), {
+      x: left,
+      y,
+      size: 8.5,
+      font: fontBold,
+      color: red,
+    });
+  }
+
+  y -= 18;
+  page.drawRectangle({ x: left, y: y - 16, width: right - left, height: 20, color: rgb(0.95, 0.96, 0.98) });
+  page.drawText('Cod', { x: left + 6, y: y - 10, size: 8.5, font: fontBold, color: dark });
+  page.drawText('Descricao da Verba', { x: left + 48, y: y - 10, size: 8.5, font: fontBold, color: dark });
+  page.drawText('Ref.', { x: 325, y: y - 10, size: 8.5, font: fontBold, color: dark });
+  page.drawText('Proventos', { x: 395, y: y - 10, size: 8.5, font: fontBold, color: green });
+  page.drawText('Descontos', { x: 482, y: y - 10, size: 8.5, font: fontBold, color: red });
+  y -= 28;
+
+  const rows: Array<{ cod: string; desc: string; ref: string; prov?: number; descVal?: number }> = [
+    { cod: '001', desc: 'Salario Base Mensal', ref: '30d', prov: holerite.salarioBase },
+  ];
+  if (holerite.adicionalPericulosidade > 0) {
+    rows.push({ cod: '015', desc: 'Adicional de Periculosidade', ref: '30%', prov: holerite.adicionalPericulosidade });
+  }
+  if (holerite.adicionalNoturno > 0) {
+    rows.push({ cod: '018', desc: 'Adicional Noturno', ref: 'CLT', prov: holerite.adicionalNoturno });
+  }
+  if (holerite.valorHorasExtras > 0 || (holerite.valorFT && holerite.valorFT > 0)) {
+    rows.push({
+      cod: '040',
+      desc: holerite.plantoesFT ? 'Plantao FT / Extras' : 'Horas Extras 50%',
+      ref: holerite.plantoesFT ? `${holerite.plantoesFT} FT` : `${holerite.horasExtras50}h`,
+      prov: holerite.valorFT || holerite.valorHorasExtras,
+    });
+  }
+  if (holerite.bonusAssiduidade && holerite.bonusAssiduidade > 0 && holerite.bonusAtivo !== false) {
+    rows.push({ cod: '070', desc: 'Bonus de Assiduidade', ref: '100%', prov: holerite.bonusAssiduidade });
+  }
+  rows.push({ cod: '101', desc: 'INSS Folha Mensal', ref: 'Tab.', descVal: holerite.descontoINSS });
+  rows.push({ cod: '105', desc: 'Vale Transporte (6%)', ref: '6%', descVal: holerite.descontoVT });
+  rows.push({ cod: '108', desc: 'Vale Refeicao / Alimentacao', ref: 'Copart.', descVal: holerite.descontoVR });
+
+  for (const r of rows) {
+    page.drawText(r.cod, { x: left + 6, y, size: 8.5, font: fontRegular, color: muted });
+    page.drawText(sanitizePdfText(r.desc), { x: left + 48, y, size: 8.5, font: fontRegular, color: dark });
+    page.drawText(sanitizePdfText(r.ref), { x: 325, y, size: 8.5, font: fontRegular, color: muted });
+    page.drawText(r.prov !== undefined ? `R$ ${r.prov.toFixed(2)}` : '-', {
+      x: 395,
+      y,
+      size: 8.5,
+      font: fontBold,
+      color: r.prov !== undefined ? green : muted,
+    });
+    page.drawText(r.descVal !== undefined ? `R$ ${r.descVal.toFixed(2)}` : '-', {
+      x: 482,
+      y,
+      size: 8.5,
+      font: fontBold,
+      color: r.descVal !== undefined ? red : muted,
+    });
+    y -= 6;
+    page.drawLine({ start: { x: left, y }, end: { x: right, y }, thickness: 0.5, color: border });
+    y -= 14;
+  }
+
+  const totalProventos =
+    holerite.salarioBase +
+    holerite.adicionalPericulosidade +
+    holerite.adicionalNoturno +
+    (holerite.valorFT || holerite.valorHorasExtras) +
+    (holerite.bonusAtivo !== false ? holerite.bonusAssiduidade || 0 : 0);
+  const totalDescontos = holerite.descontoINSS + holerite.descontoVT + holerite.descontoVR;
+  const liquido = holerite.liquidoReceber ?? Math.max(0, totalProventos - totalDescontos);
+
+  y -= 10;
+  page.drawRectangle({ x: left, y: y - 34, width: right - left, height: 42, color: dark });
+  page.drawText(`Proventos: R$ ${totalProventos.toFixed(2)} | Descontos: R$ ${totalDescontos.toFixed(2)} | FGTS (8%): R$ ${holerite.descontoFGTS.toFixed(2)}`, {
+    x: left + 12,
+    y: y - 6,
+    size: 8.5,
+    font: fontRegular,
+    color: rgb(0.8, 0.85, 0.92),
+  });
+  page.drawText(`VALOR LIQUIDO A RECEBER: R$ ${liquido.toFixed(2)}`, {
+    x: left + 12,
+    y: y - 24,
+    size: 11,
+    font: fontBold,
+    color: rgb(0.3, 0.87, 0.5),
+  });
+
+  y -= 62;
+  page.drawText('CONFIRMACAO DE RECEBIMENTO E CIENCIA', { x: left, y, size: 9, font: fontBold, color: dark });
+  y -= 13;
+  const cienciaInfo = holerite.cienciaConfirmadaEm
+    ? `Recebimento confirmado em ${new Date(holerite.cienciaConfirmadaEm).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} (Versao termo: ${holerite.cienciaDeclaracaoVersao || 'v1'}).`
+    : 'Aguardando confirmacao de recebimento e ciencia pelo colaborador no aplicativo.';
+  page.drawText(sanitizePdfText(cienciaInfo), { x: left, y, size: 8.5, font: fontRegular, color: dark });
+  y -= 12;
+  page.drawText(
+    'Aviso: A confirmacao eletronica atesta apenas o recebimento e ciencia do demonstrativo, nao implicando concordancia com valores.',
+    { x: left, y, size: 7.5, font: fontRegular, color: muted }
+  );
+
+  page.drawText(sanitizePdfText(`Documento ID: ${holerite.id} | TurnoCerto RH`), {
+    x: left,
+    y: 44,
+    size: 7.5,
+    font: fontRegular,
+    color: muted,
+  });
+
+  const bytes = await pdfDoc.save();
+  const sha256 = await computeSha256Hex(bytes);
+  const safeRef = (holerite.competencia || holerite.mesReferencia).replace(/[^\w-]+/g, '_');
+  const fileName = `Holerite_${safeRef}_${holerite.matricula}_v${holerite.versao || 1}.pdf`;
+
+  return { bytes, sha256, fileName };
+}
+
+export async function downloadHoleritePDF(
+  holerite: HoleriteRegistro,
+  colaborador: Colaborador,
+  empresa: EmpresaInfo
+): Promise<GeneratedPdfResult> {
+  const result = await generateHoleritePdfBytes(holerite, colaborador, empresa);
+  triggerBrowserPdfDownload(result.bytes, result.fileName);
+  return result;
+}
+
+/**
+ * Gera bytes binários reais de PDF (%PDF-1.x) para Comprovante de Registro de Ponto (Portaria MTE 671).
+ */
+export async function generateComprovantePontoPdfBytes(
   evento: {
     id: string;
     comprovanteNumero: string;
@@ -262,237 +265,94 @@ export function downloadComprovantePontoPDF(
     postoNome: string;
     latitude?: number;
     longitude?: number;
+    accuracyM?: number;
     distanceM?: number;
     geofenceStatus?: string;
+    classificacaoPosto?: string;
     metodoAutenticacao?: string;
     verificationStatus?: string;
-    fotoBiometriaUrl?: string;
     idempotencyKey?: string;
     motivoExcecao?: string;
-    isCobertura?: boolean;
     postoOriginalNome?: string;
   },
-  colaborador: Colaborador,
-  empresa: EmpresaInfo
-): void {
-  const dataFormatada = new Intl.DateTimeFormat('pt-BR', {
-    timeZone: 'America/Sao_Paulo',
-    dateStyle: 'full',
-    timeStyle: 'medium',
-  }).format(new Date(evento.serverTimestamp));
+  colaborador: Pick<Colaborador, 'nome' | 'cpf' | 'matricula' | 'funcao'>,
+  empresa: Pick<EmpresaInfo, 'razaoSocial' | 'cnpj' | 'endereco' | 'bairro' | 'cidade' | 'estado'>
+): Promise<GeneratedPdfResult> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([420, 620]);
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  const dataApenas = new Intl.DateTimeFormat('pt-BR', {
-    timeZone: 'America/Sao_Paulo',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  }).format(new Date(evento.serverTimestamp));
+  const dark = rgb(0.06, 0.09, 0.16);
+  const muted = rgb(0.39, 0.45, 0.55);
+  const green = rgb(0.02, 0.47, 0.34);
 
-  const horaApenas = new Intl.DateTimeFormat('pt-BR', {
-    timeZone: 'America/Sao_Paulo',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(new Date(evento.serverTimestamp));
+  const dt = new Date(evento.serverTimestamp);
+  const dataBR = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short' }).format(dt);
+  const horaBR = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', timeStyle: 'medium' }).format(dt);
 
-  const htmlContent = `
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <title>Comprovante de Ponto - ${evento.comprovanteNumero} - ${colaborador.nome}</title>
-  <style>
-    body {
-      font-family: 'Courier New', Courier, monospace;
-      margin: 0;
-      padding: 24px;
-      color: #0f172a;
-      background: #ffffff;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-    .ticket {
-      max-width: 480px;
-      margin: 0 auto;
-      border: 1px solid #94a3b8;
-      padding: 20px;
-      border-radius: 8px;
-      background: #fafafa;
-      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
-    }
-    .header {
-      text-align: center;
-      border-bottom: 2px dashed #64748b;
-      padding-bottom: 12px;
-      margin-bottom: 16px;
-    }
-    .header h1 {
-      font-size: 16px;
-      margin: 0 0 4px 0;
-      font-weight: 800;
-      letter-spacing: -0.5px;
-    }
-    .header p {
-      margin: 2px 0;
-      font-size: 11px;
-      color: #475569;
-    }
-    .title-badge {
-      display: inline-block;
-      margin-top: 8px;
-      padding: 3px 10px;
-      background: #0f172a;
-      color: #ffffff;
-      font-size: 11px;
-      font-weight: bold;
-      border-radius: 4px;
-    }
-    .section {
-      margin-bottom: 14px;
-      padding-bottom: 12px;
-      border-bottom: 1px dashed #cbd5e1;
-    }
-    .section-title {
-      font-weight: bold;
-      font-size: 11px;
-      color: #64748b;
-      text-transform: uppercase;
-      margin-bottom: 4px;
-    }
-    .row {
-      display: flex;
-      justify-content: space-between;
-      margin: 3px 0;
-    }
-    .highlight-box {
-      background: #f1f5f9;
-      border: 1px solid #cbd5e1;
-      padding: 10px;
-      border-radius: 6px;
-      text-align: center;
-      margin: 14px 0;
-    }
-    .highlight-time {
-      font-size: 26px;
-      font-weight: 900;
-      color: #047857;
-      letter-spacing: 1px;
-    }
-    .highlight-type {
-      font-size: 13px;
-      font-weight: bold;
-      color: #0f172a;
-      text-transform: uppercase;
-    }
-    .photo-evidence {
-      text-align: center;
-      margin: 14px 0;
-    }
-    .photo-evidence img {
-      width: 120px;
-      height: 120px;
-      object-fit: cover;
-      border-radius: 8px;
-      border: 2px solid #0f172a;
-    }
-    .footer {
-      text-align: center;
-      font-size: 10px;
-      color: #64748b;
-      margin-top: 16px;
-      line-height: 1.4;
-    }
-    .hash {
-      font-family: monospace;
-      font-size: 9px;
-      word-break: break-all;
-      background: #e2e8f0;
-      padding: 4px 6px;
-      border-radius: 4px;
-      margin-top: 6px;
-      color: #334155;
-    }
-    @media print {
-      body { padding: 0; background: #fff; }
-      .ticket { border: none; box-shadow: none; max-width: 100%; padding: 0; }
-    }
-  </style>
-</head>
-<body>
-  <div class="ticket">
-    <div class="header">
-      <h1>${empresa.razaoSocial}</h1>
-      <p>CNPJ: ${empresa.cnpj}</p>
-      <p>${empresa.endereco}, ${empresa.bairro} - ${empresa.cidade}/${empresa.estado}</p>
-      <div class="title-badge">COMPROVANTE DE REGISTRO DE PONTO DO TRABALHADOR</div>
-      <p style="margin-top: 4px; font-size: 10px;">Portaria MTE nº 671/2021 - REP-P</p>
-    </div>
+  let y = 580;
+  const left = 28;
+  const writeLine = (label: string, value: string, boldVal = false) => {
+    page.drawText(sanitizePdfText(label), { x: left, y, size: 8.5, font: fontRegular, color: muted });
+    page.drawText(sanitizePdfText(value), { x: left + 135, y, size: 8.5, font: boldVal ? fontBold : fontRegular, color: dark });
+    y -= 15;
+  };
 
-    <div class="highlight-box">
-      <div class="highlight-type">${evento.labelEvento}</div>
-      <div class="highlight-time">${horaApenas}</div>
-      <div style="font-size: 11px; color: #475569; margin-top: 2px;">${dataApenas} · Horário Oficial de Brasília</div>
-    </div>
+  page.drawText(sanitizePdfText(empresa.razaoSocial), { x: left, y, size: 11, font: fontBold, color: dark });
+  y -= 13;
+  page.drawText(sanitizePdfText(`CNPJ: ${empresa.cnpj}`), { x: left, y, size: 8, font: fontRegular, color: muted });
+  y -= 18;
+  page.drawText('COMPROVANTE DE REGISTRO DE PONTO', { x: left, y, size: 10.5, font: fontBold, color: dark });
+  y -= 12;
+  page.drawText('Portaria MTE n 671/2021 - REP-P (Horario de Brasilia)', { x: left, y, size: 8, font: fontRegular, color: muted });
+  y -= 16;
 
-    <div class="section">
-      <div class="section-title">Dados do Trabalhador</div>
-      <div class="row"><span>Nome:</span> <strong>${colaborador.nome}</strong></div>
-      <div class="row"><span>CPF:</span> <strong>${colaborador.cpf || '***.***.***-**'}</strong></div>
-      <div class="row"><span>Matrícula:</span> <strong>${colaborador.matricula}</strong></div>
-      <div class="row"><span>Função / Cargo:</span> <span>${colaborador.funcao}</span></div>
-    </div>
+  page.drawRectangle({ x: left, y: y - 40, width: 364, height: 46, color: rgb(0.95, 0.97, 0.99) });
+  page.drawText(sanitizePdfText(evento.labelEvento.toUpperCase()), { x: left + 10, y: y - 14, size: 9, font: fontBold, color: dark });
+  page.drawText(`${dataBR}  ${horaBR}`, { x: left + 10, y: y - 32, size: 14, font: fontBold, color: green });
+  y -= 58;
 
-    <div class="section">
-      <div class="section-title">Local e Operação</div>
-      <div class="row"><span>Condomínio / Posto:</span> <strong>${evento.condominioNome}</strong></div>
-      <div class="row"><span>Posto de Trabalho:</span> <span>${evento.postoNome}</span></div>
-      ${evento.isCobertura ? `<div class="row" style="color: #b45309;"><span>Tipo:</span> <strong>Cobertura de Escala (FT)</strong></div>` : ''}
-      ${evento.postoOriginalNome ? `<div class="row" style="font-size: 11px;"><span>Posto Habitual:</span> <span>${evento.postoOriginalNome}</span></div>` : ''}
-    </div>
-
-    <div class="section">
-      <div class="section-title">Auditoria e Segurança Digital</div>
-      <div class="row"><span>Nº do Comprovante (NSR):</span> <strong>${evento.comprovanteNumero}</strong></div>
-      <div class="row"><span>Autenticação:</span> <span>${evento.metodoAutenticacao === 'biometria_facial' ? 'Biometria Facial (Vetor 128D)' : 'Biometria Digital / Dispositivo'}</span></div>
-      <div class="row"><span>Status da Validação:</span> <strong style="color: #047857;">Confirmado</strong></div>
-      ${evento.latitude ? `<div class="row"><span>Coordenadas GPS:</span> <span>${evento.latitude.toFixed(6)}, ${evento.longitude?.toFixed(6)}</span></div>` : ''}
-      ${evento.distanceM !== undefined ? `<div class="row"><span>Distância Geodésica:</span> <span>${evento.distanceM}m do posto</span></div>` : ''}
-      ${evento.motivoExcecao ? `<div class="row" style="font-size: 10px; color: #b45309;"><span>Observação:</span> <span>${evento.motivoExcecao}</span></div>` : ''}
-    </div>
-
-    ${evento.fotoBiometriaUrl ? `
-    <div class="photo-evidence">
-      <div class="section-title" style="margin-bottom: 6px;">Evidência Biométrica Facial Capturada</div>
-      <img src="${evento.fotoBiometriaUrl}" alt="Foto Facial do Registro" />
-      <div style="font-size: 9px; color: #64748b; margin-top: 4px;">Assinatura biométrica arquivada com integridade criptográfica</div>
-    </div>
-    ` : ''}
-
-    <div class="footer">
-      <div>Hash de Integridade Criptográfica (SHA-256):</div>
-      <div class="hash">${evento.idempotencyKey || `TC-HASH-${evento.id}-${Date.now()}`}</div>
-      <p style="margin-top: 8px;">
-        Documento gerado eletronicamente pelo Sistema TurnoCerto.<br>
-        O empregado tem direito a este comprovante a cada marcação efetuada (Art. 79, Portaria MTE 671/2021).
-      </p>
-    </div>
-  </div>
-</body>
-</html>
-  `;
-
-  const blob = new Blob([htmlContent], { type: 'text/html' });
-  const url = URL.createObjectURL(blob);
-  const win = window.open(url, '_blank');
-  if (win) {
-    win.onload = () => {
-      win.print();
-    };
-  } else {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Comprovante_Ponto_${evento.comprovanteNumero}_${colaborador.matricula}.html`;
-    a.click();
+  writeLine('Colaborador:', colaborador.nome, true);
+  writeLine('CPF / Matricula:', `${colaborador.cpf || '***.***.***-**'} | ${colaborador.matricula}`);
+  writeLine('Funcao:', colaborador.funcao);
+  writeLine('Posto Detectado:', `${evento.condominioNome} (${evento.postoNome})`, true);
+  if (evento.postoOriginalNome) writeLine('Posto Base:', evento.postoOriginalNome);
+  if (evento.classificacaoPosto) writeLine('Classificacao:', evento.classificacaoPosto);
+  writeLine('Comprovante NSR:', evento.comprovanteNumero, true);
+  writeLine('Metodo Auth:', evento.metodoAutenticacao || 'biometria_facial');
+  writeLine('Status:', evento.verificationStatus === 'confirmado' ? 'Confirmado no servidor' : 'Pendente sincronizacao');
+  if (evento.latitude !== undefined && evento.longitude !== undefined) {
+    writeLine('Coordenadas GPS:', `${evento.latitude.toFixed(6)}, ${evento.longitude.toFixed(6)} (±${evento.accuracyM || '?'}m)`);
   }
+  if (evento.distanceM !== undefined) {
+    writeLine('Distancia Posto:', `${evento.distanceM} m`);
+  }
+  if (evento.motivoExcecao) {
+    writeLine('Observacao:', evento.motivoExcecao.slice(0, 48));
+  }
+
+  y -= 10;
+  page.drawText(sanitizePdfText(`Idempotencia: ${evento.idempotencyKey || evento.id}`), {
+    x: left,
+    y,
+    size: 7.5,
+    font: fontRegular,
+    color: muted,
+  });
+
+  const bytes = await pdfDoc.save();
+  const sha256 = await computeSha256Hex(bytes);
+  const fileName = `Comprovante_Ponto_${evento.comprovanteNumero}_${colaborador.matricula}.pdf`;
+  return { bytes, sha256, fileName };
 }
 
+export async function downloadComprovantePontoPDF(
+  evento: Parameters<typeof generateComprovantePontoPdfBytes>[0],
+  colaborador: Colaborador,
+  empresa: EmpresaInfo
+): Promise<GeneratedPdfResult> {
+  const result = await generateComprovantePontoPdfBytes(evento, colaborador, empresa);
+  triggerBrowserPdfDownload(result.bytes, result.fileName);
+  return result;
+}

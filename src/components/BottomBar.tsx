@@ -4,11 +4,12 @@ import { useApp } from '../context/AppContext';
 import { TabType } from '../types';
 
 export const BottomBar: React.FC = () => {
-  const { activeTab, setActiveTab, alertas } = useApp();
+  const { activeTab, setActiveTab, alertas, currentUser } = useApp();
 
   const pendenciasCriticas = alertas.filter((a) => !a.resolvido && a.gravidade === 'critica').length;
+  const isRhRole = currentUser?.role === 'rh';
 
-  const tabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }>; badge?: number }[] = [
+  const allTabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }>; badge?: number }[] = [
     { id: 'operacao', label: 'Operação', icon: LayoutDashboard, badge: pendenciasCriticas },
     { id: 'equipe', label: 'Equipe', icon: Users },
     { id: 'postos', label: 'Postos', icon: MapPin },
@@ -16,13 +17,17 @@ export const BottomBar: React.FC = () => {
     { id: 'rh', label: 'Holerite RH', icon: FileSpreadsheet },
   ];
 
+  const tabs = isRhRole
+    ? allTabs.filter((t) => t.id === 'rh' || t.id === 'equipe' || t.id === 'matriz')
+    : allTabs;
+
   return (
     <nav
       role="navigation"
       aria-label="Navegação Principal"
       className="fixed bottom-0 left-0 right-0 z-40 bg-[#0A1024]/95 backdrop-blur-lg border-t border-slate-800/80 pb-safe"
     >
-      <div className="max-w-md md:max-w-2xl mx-auto grid grid-cols-5 h-16 items-center px-1">
+      <div className={`max-w-md md:max-w-2xl mx-auto grid ${isRhRole ? 'grid-cols-3' : 'grid-cols-5'} h-16 items-center px-1`}>
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;

@@ -13,6 +13,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenInstall, isInstallable }) 
     condominios,
     colaboradores,
     solicitacoesBiometria,
+    notificacoesSistema,
     setNotificationModalOpen,
     setSupabaseModalOpen,
     empresaInfo,
@@ -44,14 +45,17 @@ export const Header: React.FC<HeaderProps> = ({ onOpenInstall, isInstallable }) 
   const pendenciasCriticas = alertas.filter(
     (a) => !a.resolvido && (a.gravidade === 'critica' || a.gravidade === 'moderada')
   ).length;
+  const notifsNaoLidasCount = notificacoesSistema.filter(
+    (n) => !n.lida && (!n.destinatarioRole || n.destinatarioRole === currentUser?.role || currentUser?.role === 'admin')
+  ).length;
 
   const temAlertaOperacional = postosDescobertosCount > 0 || faltasCount > 0 || biometriasPendentesCount > 0;
-  const totalAlertasOperacionais = postosDescobertosCount + faltasCount + pendenciasCriticas + biometriasPendentesCount;
+  const totalAlertasOperacionais = postosDescobertosCount + faltasCount + pendenciasCriticas + biometriasPendentesCount + notifsNaoLidasCount;
 
   return (
     <header className="sticky top-0 z-30 bg-[#060913]/95 backdrop-blur-md border-b border-slate-800/80 px-3.5 sm:px-4 py-2.5 transition-all">
       <div className="max-w-4xl mx-auto flex items-center justify-between gap-2.5">
-        {/* Lado esquerdo: Logotipo com título "Gestão Operacional" e subtítulo "Soluções em Terceirização" */}
+        {/* Lado esquerdo: Logotipo */}
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 via-blue-500 to-emerald-500 p-0.5 shadow-md shadow-blue-500/20 shrink-0 flex items-center justify-center">
             <div className="w-full h-full bg-[#0A1024] rounded-[10px] flex items-center justify-center">
@@ -60,29 +64,30 @@ export const Header: React.FC<HeaderProps> = ({ onOpenInstall, isInstallable }) 
           </div>
           <div className="min-w-0">
             <h1 className="text-sm font-bold tracking-tight text-white truncate leading-tight flex items-center gap-1.5">
-              <span>Gestão Operacional</span>
+              <span>{currentUser?.role === 'rh' ? 'Gestão RH & Folha' : 'Gestão Operacional'}</span>
             </h1>
             <p className="text-[11px] text-slate-400 truncate leading-tight">
-              {empresaInfo?.nomeFantasia || 'Soluções em Terceirização'}
+              {empresaInfo?.nomeFantasia || 'TurnoCerto'}
             </p>
           </div>
         </div>
 
-        {/* Lado direito: Botões de Ação, Trocar Senha, Deslogar e Notificações */}
+        {/* Lado direito */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* Status do Banco Supabase */}
-          <button
-            onClick={() => setSupabaseModalOpen(true)}
-            title="Banco de Dados Supabase Conectado (cyyvubiythuzhdwbuogg)"
-            className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-xl transition-colors active:scale-95"
-          >
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-            </span>
-            <Database className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Supabase</span>
-          </button>
+          {import.meta.env.DEV && (
+            <button
+              onClick={() => setSupabaseModalOpen(true)}
+              title="Diagnóstico Supabase"
+              className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-xl transition-colors active:scale-95"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <Database className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Supabase</span>
+            </button>
+          )}
 
           {/* Botão Direto: Trocar Senha */}
           <button
@@ -120,7 +125,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenInstall, isInstallable }) 
             onClick={() => setNotificationModalOpen(true)}
             title={
               temAlertaOperacional
-                ? `⚠️ ALERTA OPERACIONAL: ${postosDescobertosCount} posto(s) descoberto(s) · ${faltasCount} falta(s) hoje`
+                ? `${postosDescobertosCount} posto(s) descoberto(s) · ${faltasCount} falta(s) hoje`
                 : totalAlertasOperacionais > 0
                 ? `${totalAlertasOperacionais} pendência(s) registrada(s)`
                 : 'Central de Notificações e Alertas'
@@ -159,48 +164,41 @@ export const Header: React.FC<HeaderProps> = ({ onOpenInstall, isInstallable }) 
               aria-expanded={userMenuOpen}
             >
               <div className="relative">
-                <img
-                  src={
-                    currentUser?.avatarUrl ||
-                    'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80'
-                  }
-                  alt={currentUser?.nome || 'Usuário'}
-                  className="w-7 h-7 sm:w-7 sm:h-7 rounded-lg object-cover border border-blue-500/40"
-                />
+                {currentUser?.avatarUrl ? (
+                  <img
+                    src={currentUser.avatarUrl}
+                    alt={currentUser.nome}
+                    className="w-7 h-7 rounded-lg object-cover border border-blue-500/40"
+                  />
+                ) : (
+                  <div className="w-7 h-7 rounded-lg bg-blue-600/30 border border-blue-500/40 flex items-center justify-center text-[11px] font-bold text-blue-200">
+                    {(currentUser?.nome || 'U').slice(0, 2).toUpperCase()}
+                  </div>
+                )}
                 <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-1 ring-slate-900" />
               </div>
               <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform hidden sm:block ${userMenuOpen ? 'rotate-180' : ''}`} />
             </button>
 
-            {/* Dropdown Menu */}
             {userMenuOpen && (
               <div className="absolute right-0 mt-2 w-64 rounded-2xl bg-[#091026] border border-blue-500/30 shadow-2xl overflow-hidden py-1.5 z-50 animate-in fade-in slide-in-from-top-2 duration-150 text-xs">
-                {/* Header do menu */}
                 <div className="px-3.5 py-2.5 border-b border-slate-800">
                   <div className="flex items-center gap-2.5">
-                    <img
-                      src={
-                        currentUser?.avatarUrl ||
-                        'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80'
-                      }
-                      alt={currentUser?.nome || 'Usuário'}
-                      className="w-9 h-9 rounded-xl object-cover border border-blue-500/40"
-                    />
                     <div className="min-w-0 flex-1">
                       <span className="font-bold text-white block truncate">
-                        {currentUser?.nome || 'Supervisora Silva'}
+                        {currentUser?.nome}
                       </span>
                       <span className="text-[10px] text-blue-300 font-mono block truncate">
-                        {currentUser?.email || 'supervisor@turnocerto.com.br'}
+                        {currentUser?.email}
                       </span>
                       {currentUser?.role === 'admin' ? (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 inline-flex items-center gap-1 font-bold mt-0.5">
                           <ShieldCheck className="w-2.5 h-2.5 text-amber-400" />
-                          <span>Administrador (Total)</span>
+                          <span>Administrador</span>
                         </span>
                       ) : (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 inline-block mt-0.5 capitalize">
-                          {currentUser?.role === 'supervisor' ? 'Supervisor' : 'Funcionário'}
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 inline-block mt-0.5">
+                          {currentUser?.role === 'supervisor' ? 'Supervisor' : currentUser?.role === 'rh' ? 'Recursos Humanos' : 'Funcionário'}
                         </span>
                       )}
                     </div>

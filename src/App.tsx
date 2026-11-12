@@ -48,17 +48,26 @@ const AppContent: React.FC = () => {
     setEmpresaModalOpen,
     toastMessage,
     currentUser,
+    authLoading,
   } = useApp();
 
   const { isInstallable, hasNativePrompt, isIOS, install } = usePWAInstall();
   const [pwaModalOpen, setPwaModalOpen] = useState(false);
 
-  // Se o usuário não está autenticado, exibe a tela de login
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#060913] text-slate-200 flex flex-col items-center justify-center gap-3 font-['Plus_Jakarta_Sans',sans-serif]">
+        <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-xs text-slate-400">Verificando sessão autenticada...</p>
+      </div>
+    );
+  }
+
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-[#060913] via-[#080E22] to-[#0B132B] text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
         {toastMessage && (
-          <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-slate-900/95 border border-blue-500/50 text-white text-xs font-semibold shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-150 flex items-center gap-2 max-w-[90vw]">
+          <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-slate-900/95 border border-blue-500/50 text-white text-xs font-semibold shadow-2xl backdrop-blur-md flex items-center gap-2 max-w-[90vw]">
             <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
             <span className="truncate">{toastMessage}</span>
           </div>
@@ -70,15 +79,11 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // =========================================================================
-  // REGRA 2: ISOLAMENTO ESTRITO DE PERFIS (ROLE-BASED)
-  // Funcionário acessa EXCLUSIVAMENTE a área do funcionário com barra própria
-  // =========================================================================
   if (currentUser.role === 'funcionario') {
     return (
       <>
         {toastMessage && (
-          <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-slate-900/95 border border-blue-500/50 text-white text-xs font-semibold shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-150 flex items-center gap-2 max-w-[90vw]">
+          <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-slate-900/95 border border-blue-500/50 text-white text-xs font-semibold shadow-2xl backdrop-blur-md flex items-center gap-2 max-w-[90vw]">
             <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
             <span className="truncate">{toastMessage}</span>
           </div>
@@ -95,85 +100,62 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // =========================================================================
-  // PAINEL DE GESTÃO ADMINISTRATIVO (ADMIN & SUPERVISOR)
-  // =========================================================================
+  const isRhRole = currentUser.role === 'rh';
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#060913] via-[#080E22] to-[#0B132B] text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
-      {/* Toast message alert */}
       {toastMessage && (
-        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-slate-900/95 border border-blue-500/50 text-white text-xs font-semibold shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-150 flex items-center gap-2 max-w-[90vw]">
+        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-slate-900/95 border border-blue-500/50 text-white text-xs font-semibold shadow-2xl backdrop-blur-md flex items-center gap-2 max-w-[90vw]">
           <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
           <span className="truncate">{toastMessage}</span>
         </div>
       )}
 
-      {/* Sticky Compact Header */}
       <Header
         onOpenInstall={() => setPwaModalOpen(true)}
         isInstallable={isInstallable}
       />
 
-      {/* Main Viewport Container (Mobile-first responsive up to full multi-column) */}
       <main className="flex-1 max-w-4xl w-full mx-auto px-3.5 sm:px-6 pt-3 pb-24">
-        {activeTab === 'operacao' && <OperacaoTab />}
+        {activeTab === 'operacao' && !isRhRole && <OperacaoTab />}
         {activeTab === 'equipe' && <EquipeTab />}
-        {activeTab === 'postos' && <PostosTab />}
+        {activeTab === 'postos' && !isRhRole && <PostosTab />}
         {activeTab === 'matriz' && <MatrizTab />}
-        {activeTab === 'rh' && <HoleriteRHTab />}
+        {(activeTab === 'rh' || (isRhRole && activeTab !== 'equipe' && activeTab !== 'matriz')) && <HoleriteRHTab />}
       </main>
 
-      {/* Fixed Bottom Bar */}
       <BottomBar />
 
-      {/* Modals & 360 Panels */}
       {selectedPostoFor360 && (
-        <Posto360Modal
-          posto={selectedPostoFor360}
-          onClose={closePosto360}
-        />
+        <Posto360Modal posto={selectedPostoFor360} onClose={closePosto360} />
       )}
 
       {substituicaoModal?.isOpen && (
         <SubstituicaoModal
           posto={substituicaoModal.posto}
           colaboradorFalta={substituicaoModal.colaboradorFalta}
+          alertaId={substituicaoModal.alertaId}
           onClose={closeSubstituicaoModal}
         />
       )}
 
       {alocarModal?.isOpen && (
-        <AlocarModal
-          posto={alocarModal.posto}
-          onClose={closeAlocarModal}
-        />
+        <AlocarModal posto={alocarModal.posto} onClose={closeAlocarModal} />
       )}
 
       {escalaModal?.isOpen && (
-        <EscalaPostoModal
-          posto={escalaModal.posto}
-          onClose={closeEscalaModal}
-        />
+        <EscalaPostoModal posto={escalaModal.posto} onClose={closeEscalaModal} />
       )}
 
       {ocorrenciaModal?.isOpen && (
-        <NovaOcorrenciaModal
-          posto={ocorrenciaModal.posto}
-          onClose={closeOcorrenciaModal}
-        />
+        <NovaOcorrenciaModal posto={ocorrenciaModal.posto} onClose={closeOcorrenciaModal} />
       )}
 
       {holeriteDetalhe && (
-        <HoleriteDetalheModal
-          holerite={holeriteDetalhe}
-          onClose={closeHoleriteDetalhe}
-        />
+        <HoleriteDetalheModal holerite={holeriteDetalhe} onClose={closeHoleriteDetalhe} />
       )}
 
-      <CadastroFuncionarioModal
-        isOpen={cadastroModalOpen}
-        onClose={closeCadastroModal}
-      />
+      <CadastroFuncionarioModal isOpen={cadastroModalOpen} onClose={closeCadastroModal} />
 
       {condominioModal?.isOpen && (
         <CondominioModal
@@ -184,10 +166,7 @@ const AppContent: React.FC = () => {
         />
       )}
 
-      <EmpresaModal
-        isOpen={empresaModalOpen}
-        onClose={() => setEmpresaModalOpen(false)}
-      />
+      <EmpresaModal isOpen={empresaModalOpen} onClose={() => setEmpresaModalOpen(false)} />
 
       <NotificationModal />
       <SupabaseSettingsModal />

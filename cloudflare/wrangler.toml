@@ -1,0 +1,11 @@
+name = "turnocerto-holerites-cron"
+main = "holerites-cron-worker.ts"
+compatibility_date = "2026-04-01"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+# Defina em produção via dashboard/wrangler secret:
+# wrangler secret put SUPABASE_PUBLISH_HOLERITES_URL
+# wrangler secret put CRON_SECRET

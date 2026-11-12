@@ -4,13 +4,7 @@ import {
   Search,
   Phone,
   MessageSquare,
-  ShieldAlert,
   CheckCircle2,
-  Filter,
-  UserCheck,
-  Calendar,
-  AlertTriangle,
-  FileText,
   UserPlus,
   RefreshCw,
   Pencil,
@@ -18,7 +12,6 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { Colaborador, StatusColaborador } from '../../types';
 
 export const EquipeTab: React.FC = () => {
   const {
@@ -41,10 +34,11 @@ export const EquipeTab: React.FC = () => {
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const biometriasPendentes = solicitacoesBiometria.filter((s) => s.status === 'pendente');
 
-  // Status Filter Chips (Requested in Section 3)
   const statusChips = [
     { id: 'todos', label: 'Todos os Status', count: colaboradores.length },
     {
@@ -69,7 +63,6 @@ export const EquipeTab: React.FC = () => {
     },
   ];
 
-  // Distinct roles
   const roles = [
     'todas',
     'Porteiro Líder',
@@ -81,24 +74,11 @@ export const EquipeTab: React.FC = () => {
     'Volante de Cobertura',
   ];
 
-  // Filtering logic
   const filteredList = colaboradores.filter((c) => {
-    // 1. Status Filter
-    if (filterEquipeStatus !== 'todos' && c.status !== filterEquipeStatus) {
-      return false;
-    }
+    if (filterEquipeStatus !== 'todos' && c.status !== filterEquipeStatus) return false;
+    if (selectedCondominioId !== 'todos' && c.condominioId !== selectedCondominioId) return false;
+    if (filterEquipeFuncao !== 'todas' && c.funcao !== filterEquipeFuncao) return false;
 
-    // 2. Condominio Filter
-    if (selectedCondominioId !== 'todos') {
-      if (c.condominioId !== selectedCondominioId) return false;
-    }
-
-    // 3. Role Filter
-    if (filterEquipeFuncao !== 'todas' && c.funcao !== filterEquipeFuncao) {
-      return false;
-    }
-
-    // 4. Search Filter
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase();
       const match =
@@ -112,9 +92,15 @@ export const EquipeTab: React.FC = () => {
     return true;
   });
 
+  const handleConfirmReject = async (solId: string) => {
+    if (!rejectReason.trim()) return;
+    await rejeitarSolicitacaoBiometria(solId, rejectReason.trim());
+    setRejectingId(null);
+    setRejectReason('');
+  };
+
   return (
     <div className="space-y-4 pb-20 animate-in fade-in duration-200">
-      {/* Top Header & Quick Add */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-bold text-white flex items-center gap-2">
@@ -145,7 +131,7 @@ export const EquipeTab: React.FC = () => {
         </div>
       </div>
 
-      {/* 2.5 APROVAÇÕES PENDENTES DE BIOMETRIA FACIAL */}
+      {/* Solicitações de Biometria Facial */}
       {biometriasPendentes.length > 0 && (
         <div className="rounded-2xl p-4 bg-gradient-to-br from-[#0B173E] via-[#09122D] to-[#070D22] border-2 border-cyan-500/50 shadow-xl space-y-3">
           <div className="flex items-center justify-between">
@@ -166,14 +152,17 @@ export const EquipeTab: React.FC = () => {
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-start gap-2.5 min-w-0">
-                    <img
-                      src={
-                        sol.fotoPerfil ||
-                        'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&auto=format&fit=crop&q=80'
-                      }
-                      alt={sol.colaboradorNome}
-                      className="w-10 h-10 rounded-xl object-cover border border-cyan-400/40 shrink-0"
-                    />
+                    {sol.fotoPerfil ? (
+                      <img
+                        src={sol.fotoPerfil}
+                        alt={sol.colaboradorNome}
+                        className="w-10 h-10 rounded-xl object-cover border border-cyan-400/40 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-xl bg-cyan-950 border border-cyan-400/40 text-cyan-200 text-xs font-bold flex items-center justify-center shrink-0">
+                        {sol.colaboradorNome.slice(0, 2).toUpperCase()}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <strong className="text-white text-xs truncate">{sol.colaboradorNome}</strong>
@@ -185,7 +174,7 @@ export const EquipeTab: React.FC = () => {
                         {sol.colaboradorFuncao || 'Colaborador'} · {sol.colaboradorMatricula || 'N/A'}
                       </p>
                       <p className="text-[10px] text-slate-400 truncate">
-                        Posto: {sol.condominioNome || sol.postoNome || 'Portaria Principal'}
+                        Posto: {sol.condominioNome || sol.postoNome || 'Sem posto fixo'}
                       </p>
                     </div>
                   </div>
@@ -196,31 +185,63 @@ export const EquipeTab: React.FC = () => {
                   <p className="italic text-slate-200 mt-0.5">&quot;{sol.motivo}&quot;</p>
                 </div>
 
-                <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-800/80">
-                  <button
-                    onClick={() => {
-                      const just = prompt('Informe o motivo da rejeição:');
-                      if (just?.trim()) rejeitarSolicitacaoBiometria(sol.id, just.trim());
-                    }}
-                    className="px-2.5 py-1 text-xs text-slate-400 hover:text-red-300 bg-slate-900 hover:bg-red-950/40 border border-slate-800 rounded-lg cursor-pointer"
-                  >
-                    Rejeitar
-                  </button>
-                  <button
-                    onClick={() => aprovarSolicitacaoBiometria(sol.id)}
-                    className="px-3 py-1 text-xs font-bold text-white bg-gradient-to-r from-blue-600 to-emerald-600 hover:from-blue-500 hover:to-emerald-500 rounded-lg shadow-md active:scale-95 cursor-pointer flex items-center gap-1"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Aprovar (Token 48h)</span>
-                  </button>
-                </div>
+                {rejectingId === sol.id ? (
+                  <div className="p-2 rounded-lg bg-red-950/30 border border-red-500/40 space-y-2">
+                    <input
+                      type="text"
+                      value={rejectReason}
+                      onChange={(e) => setRejectReason(e.target.value)}
+                      placeholder="Informe o motivo da rejeição..."
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-red-400"
+                    />
+                    <div className="flex justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRejectingId(null);
+                          setRejectReason('');
+                        }}
+                        className="px-2 py-1 text-[11px] text-slate-300 bg-slate-800 rounded-lg cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!rejectReason.trim()}
+                        onClick={() => handleConfirmReject(sol.id)}
+                        className="px-2.5 py-1 text-[11px] font-bold text-white bg-red-600 hover:bg-red-500 rounded-lg cursor-pointer disabled:opacity-50"
+                      >
+                        Confirmar Rejeição
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-800/80">
+                    <button
+                      onClick={() => {
+                        setRejectingId(sol.id);
+                        setRejectReason('');
+                      }}
+                      className="px-2.5 py-1 text-xs text-slate-400 hover:text-red-300 bg-slate-900 hover:bg-red-950/40 border border-slate-800 rounded-lg cursor-pointer"
+                    >
+                      Rejeitar
+                    </button>
+                    <button
+                      onClick={() => aprovarSolicitacaoBiometria(sol.id)}
+                      className="px-3 py-1 text-xs font-bold text-white bg-gradient-to-r from-blue-600 to-emerald-600 hover:from-blue-500 hover:to-emerald-500 rounded-lg shadow-md active:scale-95 cursor-pointer flex items-center gap-1"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Aprovar (Token 48h)</span>
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* 3. Barra Superior de Filtros por Pílulas Deslizantes (Chips) */}
+      {/* Status Chips */}
       <div className="overflow-x-auto no-scrollbar -mx-4 px-4 py-1">
         <div className="flex items-center gap-2 min-w-max">
           {statusChips.map((chip) => {
@@ -249,9 +270,8 @@ export const EquipeTab: React.FC = () => {
         </div>
       </div>
 
-      {/* Secondary Filters: Condomínio Selector & Função */}
+      {/* Filters */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-        {/* Condomínio filter */}
         <div className="relative">
           <select
             value={selectedCondominioId}
@@ -267,7 +287,6 @@ export const EquipeTab: React.FC = () => {
           </select>
         </div>
 
-        {/* Função filter */}
         <div className="relative">
           <select
             value={filterEquipeFuncao}
@@ -283,7 +302,6 @@ export const EquipeTab: React.FC = () => {
         </div>
       </div>
 
-      {/* Search Input */}
       <div className="relative">
         <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
         <input
@@ -295,7 +313,7 @@ export const EquipeTab: React.FC = () => {
         />
       </div>
 
-      {/* Collaborator Cards Feed */}
+      {/* Collaborator Cards */}
       <div className="space-y-3">
         {filteredList.length === 0 ? (
           <div className="p-8 text-center glass-panel rounded-2xl text-slate-400 space-y-2">
@@ -308,8 +326,8 @@ export const EquipeTab: React.FC = () => {
             const isNoPosto = colab.status === 'no_posto';
             const isFolga = colab.status === 'folga';
             const isFalta = colab.status === 'falta';
-            const isAfastado = colab.status === 'afastado';
             const targetPosto = condominios.find((c) => c.id === colab.condominioId);
+            const digitsPhone = (colab.telefone || '').replace(/\D/g, '');
 
             return (
               <div
@@ -318,11 +336,17 @@ export const EquipeTab: React.FC = () => {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
-                    <img
-                      src={colab.foto}
-                      alt={colab.nome}
-                      className="w-12 h-12 rounded-xl object-cover border border-slate-700 shrink-0"
-                    />
+                    {colab.foto ? (
+                      <img
+                        src={colab.foto}
+                        alt={colab.nome}
+                        className="w-12 h-12 rounded-xl object-cover border border-slate-700 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 font-bold flex items-center justify-center shrink-0">
+                        {colab.nome.slice(0, 2).toUpperCase()}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <h3 className="text-sm font-bold text-white truncate">{colab.nome}</h3>
@@ -332,7 +356,7 @@ export const EquipeTab: React.FC = () => {
                       </div>
                       <p className="text-xs text-blue-400 font-medium truncate">{colab.funcao}</p>
                       <p className="text-[11px] text-slate-400 truncate">
-                        Posto: <strong className="text-slate-300">{colab.postoNome}</strong>
+                        Posto Base: <strong className="text-slate-300">{colab.postoNome}</strong>
                       </p>
                     </div>
                   </div>
@@ -358,7 +382,6 @@ export const EquipeTab: React.FC = () => {
                   </p>
                 )}
 
-                {/* Details Bar */}
                 <div className="grid grid-cols-2 gap-2 text-[11px] pt-2 border-t border-slate-800/80">
                   <div>
                     <span className="text-slate-400 block text-[10px]">Jornada</span>
@@ -372,34 +395,39 @@ export const EquipeTab: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Action buttons */}
                 <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5">
-                    <a
-                      href={`tel:${colab.telefone.replace(/\D/g, '')}`}
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs transition-colors"
-                      title="Ligar para o colaborador"
-                    >
-                      <Phone className="w-3.5 h-3.5 text-blue-400" />
-                      <span>Ligar</span>
-                    </a>
-                    <a
-                      href={`https://wa.me/55${colab.telefone.replace(/\D/g, '')}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs transition-colors"
-                      title="Chamar no WhatsApp"
-                    >
-                      <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>WhatsApp</span>
-                    </a>
+                    {digitsPhone ? (
+                      <>
+                        <a
+                          href={`tel:${digitsPhone}`}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs transition-colors"
+                          title="Ligar para o colaborador"
+                        >
+                          <Phone className="w-3.5 h-3.5 text-blue-400" />
+                          <span>Ligar</span>
+                        </a>
+                        <a
+                          href={`https://wa.me/55${digitsPhone}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs transition-colors"
+                          title="Chamar no WhatsApp"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>WhatsApp</span>
+                        </a>
+                      </>
+                    ) : (
+                      <span className="text-[10px] text-slate-500">Sem telefone</span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1.5 ml-auto">
                     <button
                       onClick={() => openRedefinirSenhaModal(colab)}
                       className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-semibold active:scale-95 transition-all cursor-pointer"
-                      title="Redefinir senha de acesso deste colaborador"
+                      title="Enviar redefinição de senha deste colaborador"
                     >
                       <KeyRound className="w-3.5 h-3.5 text-amber-400" />
                       <span>Senha</span>

@@ -49,8 +49,8 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
   const [tipo, setTipo] = useState<'Residencial' | 'Comercial' | 'Industrial' | 'Condomínio de Casas'>('Residencial');
   const [cnpj, setCnpj] = useState('');
   const [contratoNumero, setContratoNumero] = useState('');
-  const [supervisor, setSupervisor] = useState('Supervisora Silva');
-  const [telefoneSupervisor, setTelefoneSupervisor] = useState('(11) 98842-1190');
+  const [supervisor, setSupervisor] = useState('');
+  const [telefoneSupervisor, setTelefoneSupervisor] = useState('');
   const [vagasContratadas, setVagasContratadas] = useState(2);
   const [tipoEscalaPadrao, setTipoEscalaPadrao] = useState('12x36 Diurno / Noturno');
   const [status, setStatus] = useState<'operacional' | 'atencao' | 'critico'>('operacional');
@@ -66,11 +66,11 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
   const [cep, setCep] = useState('');
   const [endereco, setEndereco] = useState('');
   const [bairro, setBairro] = useState('');
-  const [cidade, setCidade] = useState('São Paulo - SP');
+  const [cidade, setCidade] = useState('');
 
-  // GPS & Geofence Calibration
-  const [latitude, setLatitude] = useState<number>(-23.55052);
-  const [longitude, setLongitude] = useState<number>(-46.633308);
+  // GPS & Geofence Calibration (sem coordenadas sintéticas padrão)
+  const [latitude, setLatitude] = useState<number | null>(null);
+  const [longitude, setLongitude] = useState<number | null>(null);
   const [raioGpsMetros, setRaioGpsMetros] = useState<number>(150);
   const [metodoCalibracaoGps, setMetodoCalibracaoGps] = useState<'cep_endereco' | 'no_local' | 'manual'>('manual');
   const [calibradoEm, setCalibradoEm] = useState<string>('');
@@ -83,11 +83,13 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
   const [isCapturingGps, setIsCapturingGps] = useState(false);
   const [gpsMessage, setGpsMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [manualCoordsMode, setManualCoordsMode] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
+    setConfirmDelete(false);
     if (condominio && !isNovo) {
       setNome(condominio.nome || '');
       setTipo(condominio.tipo || 'Residencial');
@@ -96,9 +98,9 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
       setCep(condominio.cep || '');
       setEndereco(condominio.endereco || '');
       setBairro(condominio.bairro || '');
-      setCidade(condominio.cidade || 'São Paulo - SP');
-      setSupervisor(condominio.supervisor || 'Supervisora Silva');
-      setTelefoneSupervisor(condominio.telefoneSupervisor || '(11) 98842-1190');
+      setCidade(condominio.cidade || '');
+      setSupervisor(condominio.supervisor || '');
+      setTelefoneSupervisor(condominio.telefoneSupervisor || '');
       setVagasContratadas(condominio.vagasContratadas || 2);
       setTipoEscalaPadrao(condominio.tipoEscalaPadrao || '12x36 Diurno / Noturno');
       setStatus(condominio.status || 'operacional');
@@ -110,9 +112,8 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
       setIcone(condominio.icone || 'Building2');
       setCor(condominio.cor || '#3B82F6');
 
-      // GPS fields
-      setLatitude(condominio.latitude !== undefined ? condominio.latitude : -23.55052);
-      setLongitude(condominio.longitude !== undefined ? condominio.longitude : -46.633308);
+      setLatitude(typeof condominio.latitude === 'number' ? condominio.latitude : null);
+      setLongitude(typeof condominio.longitude === 'number' ? condominio.longitude : null);
       setRaioGpsMetros(condominio.raioGpsMetros !== undefined ? condominio.raioGpsMetros : 150);
       setMetodoCalibracaoGps(condominio.metodoCalibracaoGps || 'manual');
       setCalibradoEm(condominio.calibradoEm || '');
@@ -121,13 +122,13 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
       setNome('');
       setTipo('Residencial');
       setCnpj('');
-      setContratoNumero(`CT-2026/${Math.floor(100 + Math.random() * 900)}`);
+      setContratoNumero(`CT-${new Date().getFullYear()}/${Math.floor(100 + Math.random() * 900)}`);
       setCep('');
       setEndereco('');
       setBairro('');
-      setCidade('São Paulo - SP');
-      setSupervisor('Supervisora Silva');
-      setTelefoneSupervisor('(11) 98842-1190');
+      setCidade('');
+      setSupervisor('');
+      setTelefoneSupervisor('');
       setVagasContratadas(2);
       setTipoEscalaPadrao('12x36 Diurno / Noturno');
       setStatus('operacional');
@@ -139,9 +140,8 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
       setIcone('Building2');
       setCor('#3B82F6');
 
-      // Default GPS
-      setLatitude(-23.55052);
-      setLongitude(-46.633308);
+      setLatitude(null);
+      setLongitude(null);
       setRaioGpsMetros(150);
       setMetodoCalibracaoGps('manual');
       setCalibradoEm('');
@@ -359,6 +359,8 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
     if (!bairro.trim()) errs.bairro = 'Bairro é obrigatório';
     if (!cidade.trim()) errs.cidade = 'Cidade é obrigatória';
     if (vagasContratadas < 1) errs.vagasContratadas = 'Mínimo de 1 vaga contratada';
+    if (latitude !== null && (latitude < -90 || latitude > 90)) errs.gps = 'Latitude inválida (-90 a 90)';
+    if (longitude !== null && (longitude < -180 || longitude > 180)) errs.gps = 'Longitude inválida (-180 a 180)';
 
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -370,6 +372,7 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
 
     setIsSubmitting(true);
     try {
+      const hasValidCoords = latitude !== null && longitude !== null && (latitude !== 0 || longitude !== 0);
       const payload: Partial<CondominioPosto> & { nome: string } = {
         nome,
         tipo,
@@ -391,11 +394,11 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
         foto,
         icone,
         cor,
-        latitude: Number(latitude),
-        longitude: Number(longitude),
+        latitude: hasValidCoords ? Number(latitude) : undefined,
+        longitude: hasValidCoords ? Number(longitude) : undefined,
         raioGpsMetros: Number(raioGpsMetros),
-        metodoCalibracaoGps,
-        calibradoEm: calibradoEm || new Date().toISOString(),
+        metodoCalibracaoGps: hasValidCoords ? metodoCalibracaoGps : undefined,
+        calibradoEm: hasValidCoords ? calibradoEm || new Date().toISOString() : undefined,
         calibradoPrecisaoM: calibradoPrecisaoM || undefined,
       };
 
@@ -411,21 +414,21 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
 
   const handleDelete = async () => {
     if (!condominio) return;
-    if (
-      window.confirm(
-        `Tem certeza que deseja excluir o condomínio "${condominio.nome}"? Os colaboradores vinculados serão transferidos para a Reserva Operacional.`
-      )
-    ) {
-      setIsSubmitting(true);
-      try {
-        await excluirCondominio(condominio.id);
-      } finally {
-        setIsSubmitting(false);
-      }
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await excluirCondominio(condominio.id);
+    } finally {
+      setIsSubmitting(false);
+      setConfirmDelete(false);
     }
   };
 
-  const googleMapsUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+  const hasValidCoords = latitude !== null && longitude !== null;
+  const googleMapsUrl = hasValidCoords ? `https://www.google.com/maps?q=${latitude},${longitude}` : null;
 
   return (
     <div
@@ -578,14 +581,31 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
               {/* Status Badge */}
               <div className="text-right hidden sm:block">
                 <span className="text-[10px] font-mono text-slate-400 block">
-                  {latitude.toFixed(5)}, {longitude.toFixed(5)}
+                  {hasValidCoords ? `${latitude!.toFixed(5)}, ${longitude!.toFixed(5)}` : 'Sem coordenadas'}
                 </span>
-                <span className="text-[9px] font-semibold text-emerald-400 flex items-center justify-end gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>Raio: {raioGpsMetros}m</span>
+                <span
+                  className={`text-[9px] font-semibold flex items-center justify-end gap-1 ${
+                    hasValidCoords ? 'text-emerald-400' : 'text-amber-400'
+                  }`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      hasValidCoords ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                    }`}
+                  />
+                  <span>{hasValidCoords ? `Raio: ${raioGpsMetros}m` : 'GPS não calibrado'}</span>
                 </span>
               </div>
             </div>
+
+            {!hasValidCoords && (
+              <div className="p-2.5 rounded-xl bg-amber-950/35 border border-amber-500/40 text-amber-200 text-[11px] flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <span>
+                  Este posto ainda não possui coordenadas GPS configuradas. Busque o CEP/endereço ou capture a posição presencial para ativar a geofence de ponto.
+                </span>
+              </div>
+            )}
 
             {/* Selector de Abas dos 2 Métodos de Calibração */}
             <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-950/80 border border-slate-800">
@@ -833,15 +853,15 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] text-slate-400 font-mono">
-                      LAT: <strong className="text-white">{latitude.toFixed(6)}</strong>
+                      LAT: <strong className="text-white">{latitude !== null ? latitude.toFixed(6) : 'Não calibrada'}</strong>
                     </span>
                     <span className="text-[10px] text-slate-400 font-mono">
-                      LNG: <strong className="text-white">{longitude.toFixed(6)}</strong>
+                      LNG: <strong className="text-white">{longitude !== null ? longitude.toFixed(6) : 'Não calibrada'}</strong>
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-[9px] text-slate-500">
-                      Método: {metodoCalibracaoGps === 'no_local' ? '📍 No Local (GPS Aparelho)' : metodoCalibracaoGps === 'cep_endereco' ? '🔍 Endereço/CEP' : 'Manual'}
+                      Método: {metodoCalibracaoGps === 'no_local' ? 'No Local (GPS Aparelho)' : metodoCalibracaoGps === 'cep_endereco' ? 'Endereço/CEP' : 'Manual'}
                     </span>
                     {calibradoPrecisaoM !== null && (
                       <span className="text-[9px] text-emerald-400 font-medium">
@@ -860,17 +880,21 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
                     {manualCoordsMode ? 'Ocultar ajuste manual' : 'Editar Lat/Lng manual'}
                   </button>
 
-                  <a
-                    href={googleMapsUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300 font-medium bg-blue-500/10 hover:bg-blue-500/20 px-2 py-1 rounded-lg border border-blue-500/30 transition-colors"
-                  >
-                    <span>Ver no Mapa</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+                  {googleMapsUrl && (
+                    <a
+                      href={googleMapsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300 font-medium bg-blue-500/10 hover:bg-blue-500/20 px-2 py-1 rounded-lg border border-blue-500/30 transition-colors"
+                    >
+                      <span>Ver no Mapa</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
                 </div>
               </div>
+
+              {errors.gps && <p className="text-red-400 text-[10px]">{errors.gps}</p>}
 
               {/* Input manual de Latitude / Longitude se ativado */}
               {manualCoordsMode && (
@@ -880,8 +904,12 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
                     <input
                       type="number"
                       step="any"
-                      value={latitude}
-                      onChange={(e) => setLatitude(parseFloat(e.target.value) || 0)}
+                      value={latitude ?? ''}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setLatitude(raw === '' ? null : parseFloat(raw));
+                      }}
+                      placeholder="-23.550520"
                       className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:outline-none"
                     />
                   </div>
@@ -890,8 +918,12 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
                     <input
                       type="number"
                       step="any"
-                      value={longitude}
-                      onChange={(e) => setLongitude(parseFloat(e.target.value) || 0)}
+                      value={longitude ?? ''}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setLongitude(raw === '' ? null : parseFloat(raw));
+                      }}
+                      placeholder="-46.633308"
                       className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:outline-none"
                     />
                   </div>
@@ -1063,7 +1095,7 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
                 Cancelar
               </button>
 
-              {!isNovo && condominio && (
+              {!isNovo && condominio && !confirmDelete && (
                 <button
                   type="button"
                   onClick={handleDelete}
@@ -1072,6 +1104,26 @@ export const CondominioModal: React.FC<CondominioModalProps> = ({
                   <Trash2 className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">Excluir</span>
                 </button>
+              )}
+
+              {!isNovo && condominio && confirmDelete && (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={handleDelete}
+                    className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer"
+                  >
+                    Confirmar Exclusão
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(false)}
+                    className="px-2.5 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs cursor-pointer"
+                  >
+                    Voltar
+                  </button>
+                </div>
               )}
             </div>
 

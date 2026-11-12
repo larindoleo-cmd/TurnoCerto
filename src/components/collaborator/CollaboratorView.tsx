@@ -2,8 +2,8 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   CollaboratorTabType,
+  CondominioPosto,
   PontoEvento,
-  ColaboradorDocumento,
   NotificacaoColaborador,
   HoleriteRegistro,
   TipoBatidaPonto,
@@ -27,11 +27,6 @@ import { ChangePasswordModal } from '../modals/ChangePasswordModal';
 import { ComprovanteDetalheModal } from './screens/ComprovanteDetalheModal';
 import { getPontoEventos } from '../../services/pontoService';
 import { getSupabase } from '../../lib/supabase';
-import {
-  INITIAL_COLABORADOR_DOCUMENTOS,
-  INITIAL_NOTIFICACOES_COLABORADOR,
-  INITIAL_PONTO_EVENTOS,
-} from '../../data/mockData';
 
 export const CollaboratorView: React.FC = () => {
   const {
@@ -40,10 +35,20 @@ export const CollaboratorView: React.FC = () => {
     condominios,
     holerites,
     pontos,
+    pontoEventos,
+    setPontoEventos,
+    coberturasProgramadas,
+    documentoSolicitacoes,
+    colaboradorDocumentos,
+    documentoHistorico,
+    notificacoesSistema,
+    marcarNotificacaoLida,
+    responderCobertura,
+    registrarSolicitacaoCorrecao,
+    solicitacoesCorrecao,
     empresaInfo,
     showToast,
     setTrocarSenhaModalOpen,
-    registrarPonto,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<CollaboratorTabType>('meu_turno');
@@ -61,30 +66,27 @@ export const CollaboratorView: React.FC = () => {
   const [comprovanteModalOpen, setComprovanteModalOpen] = useState(false);
   const [selectedEventoComprovante, setSelectedEventoComprovante] = useState<PontoEvento | null>(null);
 
-  // Tipo de batida selecionado (Entrada, Pausa Almoço/Janta, Retorno, Saída)
+  // Tipo de batida selecionado
   const [selectedPunchType, setSelectedPunchType] = useState<TipoBatidaPonto | undefined>(undefined);
 
-  // Local events state
+  // Eventos locais registrados na sessão atual
   const [eventosAtualizados, setEventosAtualizados] = useState<PontoEvento[]>([]);
+  const [legacyNotifs, setLegacyNotifs] = useState<NotificacaoColaborador[]>([]);
 
   const handleOpenBaterPonto = (tipo?: TipoBatidaPonto) => {
     setSelectedPunchType(tipo);
     setRegistroPontoOpen(true);
   };
 
-  // =========================================================================
-  // VÍNCULO REAL DO COLABORADOR AUTENTICADO
-  // =========================================================================
+  // Vínculo real do colaborador autenticado
   const linkedColaborador = useMemo(() => {
     if (!currentUser) return null;
 
-    // 1. Pelo ID de colaborador vinculado diretamente à sessão
     if (currentUser.colaboradorId) {
       const found = colaboradores.find((c) => c.id === currentUser.colaboradorId);
       if (found) return found;
     }
 
-    // 2. Pelo e-mail do usuário
     const cleanEmail = currentUser.email?.trim().toLowerCase();
     if (cleanEmail) {
       const found = colaboradores.find(
@@ -93,27 +95,16 @@ export const CollaboratorView: React.FC = () => {
       if (found) return found;
     }
 
-    // 3. Pelo ID de usuário se corresponder ao ID do colaborador
     const foundById = colaboradores.find((c) => c.id === currentUser.id);
     if (foundById) return foundById;
 
-    // 4. Se não encontrar, bloqueia
     return null;
   }, [currentUser, colaboradores]);
 
-  // Notificações do Colaborador com persistência
-  const [notificacoes, setNotificacoes] = useState<NotificacaoColaborador[]>(() => {
-    if (!linkedColaborador) return [];
-    const initialForColab = INITIAL_NOTIFICACOES_COLABORADOR.filter(
-      (n) => n.colaboradorId === linkedColaborador.id
-    );
-    return initialForColab;
-  });
-
-  // Carrega notificações do Supabase se existirem
+  // Notificações legadas complementares (apenas se houver tabela antiga no Supabase)
   useEffect(() => {
     if (!linkedColaborador) return;
-    const fetchNotificacoes = async () => {
+    const fetchLegacyNotifs = async () => {
       const client = getSupabase();
       if (!client) return;
       try {
@@ -130,44 +121,69 @@ export const CollaboratorView: React.FC = () => {
             titulo: d.titulo,
             mensagem: d.mensagem,
             tipo: d.tipo || 'geral',
-            dataHora: d.created_at ? new Date(d.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : 'Hoje',
+            dataHora: d.created_at
+              ? new Date(d.created_at).toLocaleTimeString('pt-BR', {
+                  timeZone: 'America/Sao_Paulo',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+              : '--:--',
             lida: Boolean(d.lida),
             linkDestino: d.link_destino || undefined,
           }));
-          setNotificacoes(mapped);
+          setLegacyNotifs(mapped);
         }
       } catch {
-        // Usa mock resiliente
+        // tabela opcional
       }
     };
-    fetchNotificacoes();
+    fetchLegacyNotifs();
   }, [linkedColaborador?.id]);
 
+  // Notificações unificadas do sistema + legadas (leitura estritamente individual)
+  const notificacoes = useMemo<NotificacaoColaborador[]>(() => {
+    if (!linkedColaborador) return [];
+    const fromSistema: NotificacaoColaborador[] = notificacoesSistema
+      .filter((n) => n.destinatarioColaboradorId === linkedColaborador.id)
+      .map((n) => ({
+        id: n.id,
+        colaboradorId: linkedColaborador.id,
+        titulo: n.titulo,
+        mensagem: n.mensagem,
+        tipo:
+          n.categoria === 'holerite'
+            ? 'holerite'
+            : n.categoria === 'cobertura'
+            ? 'escala'
+            : n.categoria === 'ponto'
+            ? 'ponto'
+            : 'geral',
+        dataHora: new Date(n.createdAt).toLocaleTimeString('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        lida: n.lida,
+        linkDestino: (n.linkDestino as CollaboratorTabType) || undefined,
+      }));
+
+    const merged = new Map<string, NotificacaoColaborador>();
+    [...fromSistema, ...legacyNotifs].forEach((n) => merged.set(n.id, n));
+    return Array.from(merged.values());
+  }, [linkedColaborador, notificacoesSistema, legacyNotifs]);
+
   const handleMarcarNotificacaoComoLida = async (id: string) => {
-    setNotificacoes((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, lida: true } : n))
-    );
+    const isSistema = notificacoesSistema.some((n) => n.id === id);
+    if (isSistema) {
+      await marcarNotificacaoLida(id);
+    }
+    setLegacyNotifs((prev) => prev.map((n) => (n.id === id ? { ...n, lida: true } : n)));
     const client = getSupabase();
-    if (client) {
+    if (client && !isSistema) {
       try {
         await client.from('notificacoes_colaborador').update({ lida: true }).eq('id', id);
-      } catch (err) {
-        console.warn('Erro ao atualizar notificação no Supabase:', err);
-      }
-    }
-  };
-
-  const handleMarcarTodasComoLidas = async () => {
-    setNotificacoes((prev) => prev.map((n) => ({ ...n, lida: true })));
-    const client = getSupabase();
-    if (client && linkedColaborador) {
-      try {
-        await client
-          .from('notificacoes_colaborador')
-          .update({ lida: true })
-          .eq('colaborador_id', linkedColaborador.id);
-      } catch (err) {
-        console.warn('Erro ao atualizar todas notificações no Supabase:', err);
+      } catch {
+        // silencioso
       }
     }
   };
@@ -204,45 +220,50 @@ export const CollaboratorView: React.FC = () => {
     );
   }
 
-  // Localiza o condomínio e posto vinculado
-  const linkedPosto = condominios.find((c) => c.id === linkedColaborador.condominioId) ||
-    condominios[0] || {
-      id: 'cond-default',
-      nome: 'Residencial Alvorada',
+  // Posto habitual do colaborador (SEM coordenadas sintéticas de fallback)
+  const linkedPosto: CondominioPosto =
+    condominios.find((c) => c.id === linkedColaborador.condominioId) || {
+      id: linkedColaborador.condominioId || 'reserva-operacional',
+      nome: linkedColaborador.postoNome || 'Reserva Operacional / Sem Posto Fixo',
       tipo: 'Residencial',
-      cnpj: '45.123.890/0001-12',
-      contratoNumero: 'CT-2024/089',
-      endereco: 'Av. Paulista, 1853 - Bela Vista',
-      bairro: 'Bela Vista',
-      cidade: 'São Paulo - SP',
-      supervisor: 'Supervisora Silva',
-      telefoneSupervisor: '(11) 98842-1190',
-      vagasContratadas: 4,
-      status: 'operacional',
-      tipoEscalaPadrao: '12x36 (07:00 - 19:00)',
-      coberturaPercentual: 100,
-      contatoSindico: 'Dr. Roberto Mendonça',
-      telefoneSindico: '(11) 97123-4567',
-      instrucoesGuarita: 'Controle de portaria e identificação.',
-      latitude: -23.55052,
-      longitude: -46.633308,
+      cnpj: '',
+      contratoNumero: '',
+      endereco: 'Lotação ainda não vinculada a posto específico',
+      bairro: '',
+      cidade: '',
+      supervisor: '',
+      telefoneSupervisor: '',
+      vagasContratadas: 0,
+      status: 'atencao',
+      ativo: false,
+      tipoEscalaPadrao: linkedColaborador.jornada || '12x36',
+      coberturaPercentual: 0,
+      contatoSindico: '',
+      telefoneSindico: '',
+      instrucoesGuarita: '',
+      latitude: undefined,
+      longitude: undefined,
       raioGpsMetros: 150,
       plantaoAtual: { operandoAgora: [], proximaRendicao: { colaboradorId: '', horarioTroca: '19:00' } },
     };
 
-  // Carrega eventos de ponto do colaborador
+  // Carrega eventos reais de ponto do colaborador (AppContext + cache local)
   const allPunchEvents = useMemo(() => {
     const local = getPontoEventos(linkedColaborador.id);
-    const initialForColab = INITIAL_PONTO_EVENTOS.filter(
-      (e) => e.colaboradorId === linkedColaborador.id
-    );
-    const combined = [...local, ...eventosAtualizados, ...initialForColab];
+    const fromContext = pontoEventos.filter((e) => e.colaboradorId === linkedColaborador.id);
+    const combined = [...fromContext, ...eventosAtualizados, ...local];
     const uniqueMap = new Map<string, PontoEvento>();
-    combined.forEach((item) => uniqueMap.set(item.id, item));
+    combined.forEach((item) => {
+      const key = item.idempotencyKey || item.id;
+      const existing = uniqueMap.get(key);
+      if (!existing || item.verificationStatus === 'confirmado') {
+        uniqueMap.set(key, item);
+      }
+    });
     return Array.from(uniqueMap.values()).sort(
       (a, b) => new Date(b.serverTimestamp).getTime() - new Date(a.serverTimestamp).getTime()
     );
-  }, [linkedColaborador.id, eventosAtualizados]);
+  }, [linkedColaborador.id, pontoEventos, eventosAtualizados]);
 
   // Batidas de hoje no fuso America/Sao_Paulo
   const hojeKey = new Intl.DateTimeFormat('fr-CA', {
@@ -264,33 +285,39 @@ export const CollaboratorView: React.FC = () => {
 
   const ultimoEvento = allPunchEvents[0];
 
-  // Documentos pessoais
-  const meusDocumentos: ColaboradorDocumento[] = INITIAL_COLABORADOR_DOCUMENTOS.filter(
+  const meusDocumentos = colaboradorDocumentos.filter(
     (d) => d.colaboradorId === linkedColaborador.id
+  );
+  const minhasSolicitacoesDocs = documentoSolicitacoes.filter(
+    (s) => s.colaboradorId === linkedColaborador.id
+  );
+  const meuHistoricoDocs = documentoHistorico.filter(
+    (h) => h.colaboradorId === linkedColaborador.id
+  );
+  const minhasCoberturas = coberturasProgramadas.filter(
+    (c) => c.colaboradorId === linkedColaborador.id
+  );
+  const minhasCorrecoes = solicitacoesCorrecao.filter(
+    (c) => c.colaboradorId === linkedColaborador.id
   );
 
   const unreadNotifs = notificacoes.filter((n) => !n.lida).length;
 
   const handlePontoSuccess = (novoEvento: PontoEvento) => {
-    setEventosAtualizados((prev) => [novoEvento, ...prev]);
-    const horaFmt = new Intl.DateTimeFormat('pt-BR', {
-      timeZone: 'America/Sao_Paulo',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date(novoEvento.serverTimestamp));
+    setEventosAtualizados((prev) => [
+      novoEvento,
+      ...prev.filter((e) => e.id !== novoEvento.id && e.idempotencyKey !== novoEvento.idempotencyKey),
+    ]);
+    setPontoEventos((prev) => [
+      novoEvento,
+      ...prev.filter((e) => e.id !== novoEvento.id && e.idempotencyKey !== novoEvento.idempotencyKey),
+    ]);
 
-    registrarPonto({
-      colaboradorId: novoEvento.colaboradorId,
-      colaboradorNome: novoEvento.colaboradorNome,
-      data: novoEvento.serverTimestamp.slice(0, 10),
-      entrada1: novoEvento.tipoEvento === 'entrada' ? horaFmt : '07:00',
-      saida1: novoEvento.tipoEvento === 'saida_intervalo' ? horaFmt : undefined,
-      entrada2: novoEvento.tipoEvento === 'retorno_intervalo' ? horaFmt : undefined,
-      saida2: novoEvento.tipoEvento === 'saida' ? horaFmt : undefined,
-      statusPonto: 'Regular',
-      localizacaoGPS: `${novoEvento.condominioNome} (${novoEvento.distanceM || 0}m)`,
-    });
-    showToast(`Ponto registrado e confirmado no servidor! Comprovante: ${novoEvento.comprovanteNumero}`);
+    if (novoEvento.verificationStatus === 'confirmado') {
+      showToast(`Ponto confirmado no servidor! Comprovante: ${novoEvento.comprovanteNumero}`);
+    } else {
+      showToast(`Ponto salvo em fila local (Pendente de sincronização). Comprovante: ${novoEvento.comprovanteNumero}`);
+    }
   };
 
   const handleVerComprovante = (evento: PontoEvento) => {
@@ -300,7 +327,6 @@ export const CollaboratorView: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#060913] via-[#080E22] to-[#0B132B] text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
-      {/* Cabeçalho Fixo do Colaborador */}
       <CollaboratorHeader
         colaborador={linkedColaborador}
         unreadCount={unreadNotifs}
@@ -308,7 +334,6 @@ export const CollaboratorView: React.FC = () => {
         onOpenProfile={() => setActiveTab('meu_perfil')}
       />
 
-      {/* Viewport Principal com Rolagem e Margem para a Bottom Bar */}
       <main className="flex-1 max-w-md w-full mx-auto px-3.5 sm:px-4 pt-3 pb-28">
         {activeTab === 'meu_turno' && (
           <MeuTurnoScreen
@@ -319,6 +344,8 @@ export const CollaboratorView: React.FC = () => {
             pontosHistoricos={pontos.filter(
               (p) => p.colaboradorId === linkedColaborador.id || p.colaboradorNome === linkedColaborador.nome
             )}
+            allPunchEvents={allPunchEvents}
+            coberturas={minhasCoberturas}
             onBaterPonto={handleOpenBaterPonto}
             onNavigateTab={(tab) => setActiveTab(tab)}
             onOpenOcorrencia={() => setOcorrenciaOpen(true)}
@@ -330,6 +357,18 @@ export const CollaboratorView: React.FC = () => {
           <MinhaEscalaScreen
             colaborador={linkedColaborador}
             posto={linkedPosto}
+            condominios={condominios}
+            coberturas={minhasCoberturas}
+            onResponderCobertura={responderCobertura}
+            onSolicitarAjuste={(dataPonto, motivo) =>
+              registrarSolicitacaoCorrecao({
+                colaboradorId: linkedColaborador.id,
+                colaboradorNome: linkedColaborador.nome,
+                dataPonto,
+                tipoCorrecao: 'ajuste_escala',
+                justificativa: motivo,
+              })
+            }
             onOpenSupport={() => setFaleRHOpen(true)}
           />
         )}
@@ -342,6 +381,8 @@ export const CollaboratorView: React.FC = () => {
             pontosHistoricos={pontos.filter(
               (p) => p.colaboradorId === linkedColaborador.id || p.colaboradorNome === linkedColaborador.nome
             )}
+            solicitacoesCorrecao={minhasCorrecoes}
+            onSolicitarCorrecao={registrarSolicitacaoCorrecao}
             onVerComprovante={handleVerComprovante}
           />
         )}
@@ -349,8 +390,12 @@ export const CollaboratorView: React.FC = () => {
         {activeTab === 'documentos' && (
           <DocumentosScreen
             colaborador={linkedColaborador}
-            holerites={holerites}
+            holerites={holerites.filter(
+              (h) => h.statusPublicacao === 'publicado' || !h.statusPublicacao
+            )}
             documentos={meusDocumentos}
+            solicitacoes={minhasSolicitacoesDocs}
+            historico={meuHistoricoDocs}
             empresa={empresaInfo}
             onOpenHoleriteDetalhe={(h) => setSelectedHolerite(h)}
             onOpenFaleRH={() => setFaleRHOpen(true)}
@@ -368,21 +413,17 @@ export const CollaboratorView: React.FC = () => {
         )}
       </main>
 
-      {/* Barra Inferior Exclusiva do Funcionário */}
       <CollaboratorBottomBar
         activeTab={activeTab}
         onChangeTab={(tab) => setActiveTab(tab)}
         unreadCount={unreadNotifs}
       />
 
-      {/* ========================================================================= */}
-      {/* FLUXOS E MODAIS COMPLEMENTARES */}
-      {/* ========================================================================= */}
       <RegistroPontoModal
         isOpen={registroPontoOpen}
         colaborador={linkedColaborador}
         posto={linkedPosto}
-        hojePunches={hojePunches}
+        hojePunches={allPunchEvents}
         initialPunchType={selectedPunchType}
         onClose={() => setRegistroPontoOpen(false)}
         onSuccess={handlePontoSuccess}
@@ -392,7 +433,6 @@ export const CollaboratorView: React.FC = () => {
         }}
       />
 
-      {/* Modal de Comprovante de Ponto Oficial */}
       {selectedEventoComprovante && (
         <ComprovanteDetalheModal
           isOpen={comprovanteModalOpen}
@@ -448,7 +488,6 @@ export const CollaboratorView: React.FC = () => {
         onClose={() => setNotificacoesOpen(false)}
         onNavigateTab={(tab) => setActiveTab(tab)}
         onMarcarComoLida={handleMarcarNotificacaoComoLida}
-        onMarcarTodasComoLidas={handleMarcarTodasComoLidas}
       />
 
       {selectedHolerite && (
@@ -462,3 +501,4 @@ export const CollaboratorView: React.FC = () => {
     </div>
   );
 };
+

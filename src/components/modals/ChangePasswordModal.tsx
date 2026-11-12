@@ -51,8 +51,8 @@ export const ChangePasswordModal: React.FC = () => {
     e.preventDefault();
     setError(null);
 
-    if (!novaSenha || novaSenha.trim().length < 6) {
-      setError('A nova senha deve possuir no mínimo 6 caracteres.');
+    if (!novaSenha || novaSenha.trim().length < 8) {
+      setError('A nova senha deve possuir no mínimo 8 caracteres.');
       return;
     }
 
@@ -112,14 +112,22 @@ export const ChangePasswordModal: React.FC = () => {
         {currentUser && (
           <div className="px-5 pt-4">
             <div className="p-3 rounded-2xl bg-blue-950/20 border border-blue-500/25 flex items-center gap-3">
-              <img
-                src={
-                  currentUser.avatarUrl ||
-                  'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80'
-                }
-                alt={currentUser.nome}
-                className="w-10 h-10 rounded-xl object-cover border border-blue-500/30 shrink-0"
-              />
+              {currentUser.avatarUrl ? (
+                <img
+                  src={currentUser.avatarUrl}
+                  alt={currentUser.nome}
+                  className="w-10 h-10 rounded-xl object-cover border border-blue-500/30 shrink-0"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-xl bg-blue-600/30 border border-blue-500/30 shrink-0 flex items-center justify-center font-bold text-xs text-blue-200">
+                  {currentUser.nome
+                    .split(/\s+/)
+                    .filter(Boolean)
+                    .slice(0, 2)
+                    .map((p) => p[0]?.toUpperCase() || '')
+                    .join('')}
+                </div>
+              )}
               <div className="min-w-0 flex-1">
                 <span className="text-xs font-bold text-white block truncate">
                   {currentUser.nome}
@@ -187,9 +195,10 @@ export const ChangePasswordModal: React.FC = () => {
               <input
                 type={showNova ? 'text' : 'password'}
                 required
+                minLength={8}
                 value={novaSenha}
                 onChange={(e) => setNovaSenha(e.target.value)}
-                placeholder="Mínimo 6 caracteres"
+                placeholder="Mínimo 8 caracteres"
                 className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 text-xs font-mono"
               />
               <Key className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />

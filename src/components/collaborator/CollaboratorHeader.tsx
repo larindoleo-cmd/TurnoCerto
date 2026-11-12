@@ -81,11 +81,22 @@ export const CollaboratorHeader: React.FC<CollaboratorHeaderProps> = ({
             className="relative p-0.5 rounded-xl border border-blue-500/40 hover:border-blue-400 transition-all cursor-pointer active:scale-95"
             title="Ver meu perfil"
           >
-            <img
-              src={colaborador.foto || 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80'}
-              alt={colaborador.nome}
-              className="w-8 h-8 rounded-[10px] object-cover"
-            />
+            {colaborador.foto ? (
+              <img
+                src={colaborador.foto}
+                alt={colaborador.nome}
+                className="w-8 h-8 rounded-[10px] object-cover"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-[10px] bg-blue-600/30 text-blue-200 font-bold text-xs flex items-center justify-center">
+                {colaborador.nome
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map((p) => p[0]?.toUpperCase() || '')
+                  .join('')}
+              </div>
+            )}
             <span
               className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#070B19] ${
                 colaborador.status === 'no_posto' ? 'bg-emerald-500' : 'bg-slate-500'

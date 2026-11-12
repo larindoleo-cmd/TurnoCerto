@@ -2,11 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   X,
   KeyRound,
-  Lock,
-  Eye,
-  EyeOff,
   CheckCircle2,
-  Sparkles,
   Copy,
   Check,
   MessageSquare,
@@ -14,7 +10,7 @@ import {
   AlertCircle,
   Smartphone,
   Mail,
-  User,
+  Send,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
@@ -27,18 +23,16 @@ export const RedefinirSenhaColaboradorModal: React.FC = () => {
     showToast,
   } = useApp();
 
-  const [novaSenha, setNovaSenha] = useState('');
-  const [showSenha, setShowSenha] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [salvoComSucesso, setSalvoComSucesso] = useState(false);
+  const [enviadoComSucesso, setEnviadoComSucesso] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Gera uma senha temporária inicial ao abrir o modal
   useEffect(() => {
     if (redefinirSenhaModalOpen && colaboradorParaRedefinirSenha) {
-      gerarSenhaAleatoria();
-      setSalvoComSucesso(false);
+      setEnviadoComSucesso(false);
+      setStatusMessage(null);
       setError(null);
       setCopied(false);
     }
@@ -47,67 +41,40 @@ export const RedefinirSenhaColaboradorModal: React.FC = () => {
   if (!redefinirSenhaModalOpen || !colaboradorParaRedefinirSenha) return null;
 
   const colab = colaboradorParaRedefinirSenha;
+  const emailDestino = colab.email || '';
+  const numLimpo = (colab.telefone || '').replace(/\D/g, '');
 
-  const gerarSenhaAleatoria = () => {
-    const num = Math.floor(1000 + Math.random() * 9000);
-    const pass = `Turno@${num}`;
-    setNovaSenha(pass);
-    setShowSenha(true);
-    setError(null);
-  };
+  const mensagemOrientacao = `TurnoCerto - Recuperação de Acesso
 
-  const aplicarSenhaPadrao = () => {
-    setNovaSenha('Turno@2026');
-    setShowSenha(true);
-    setError(null);
-  };
+Olá ${colab.nome},
+Um link oficial de redefinição de senha foi enviado via Supabase Auth para o seu e-mail corporativo: ${emailDestino || '(sem e-mail cadastrado)'}.
 
-  // Texto formatado para envio ao colaborador
-  const mensagemWhatsApp = `*🔐 TurnoCerto - Novas Credenciais de Acesso*
+Acesse sua caixa de entrada para definir sua nova senha com segurança.`;
 
-Olá *${colab.nome}*,
-Sua senha de acesso ao aplicativo foi atualizada pela Supervisão:
-
-👤 *Login:* ${colab.email || colab.cpf || colab.matricula}
-🔑 *Nova Senha:* ${novaSenha}
-📍 *Posto:* ${colab.postoNome}
-
-Você já pode entrar no aplicativo para registrar seu ponto e acompanhar seus turnos.
-Caso deseje, altere esta senha em _Meu Perfil > Segurança e Senha_.`;
+  const whatsappUrl = numLimpo
+    ? `https://wa.me/55${numLimpo}?text=${encodeURIComponent(mensagemOrientacao)}`
+    : null;
 
   const handleCopiar = async () => {
     try {
-      await navigator.clipboard.writeText(mensagemWhatsApp);
+      await navigator.clipboard.writeText(mensagemOrientacao);
       setCopied(true);
-      showToast('Credenciais copiadas para a área de transferência!');
+      showToast('Orientações de recuperação copiadas.');
       setTimeout(() => setCopied(false), 3000);
     } catch {
-      showToast('Falha ao copiar automaticamente.');
+      showToast('Não foi possível copiar automaticamente.');
     }
   };
 
-  const handleEnviarWhatsApp = () => {
-    const numLimpo = (colab.telefone || '').replace(/\D/g, '');
-    const url = numLimpo
-      ? `https://wa.me/55${numLimpo}?text=${encodeURIComponent(mensagemWhatsApp)}`
-      : `https://wa.me/?text=${encodeURIComponent(mensagemWhatsApp)}`;
-    window.open(url, '_blank');
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleEnviarReset = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-
-    if (!novaSenha || novaSenha.trim().length < 6) {
-      setError('A senha deve possuir no mínimo 6 caracteres.');
-      return;
-    }
-
     setIsSubmitting(true);
     try {
-      const res = await redefinirSenhaColaborador(colab.id, novaSenha.trim());
+      const res = await redefinirSenhaColaborador(colab.id, '');
       if (res.success) {
-        setSalvoComSucesso(true);
+        setEnviadoComSucesso(true);
+        setStatusMessage(res.message);
       } else {
         setError(res.message);
       }
@@ -123,18 +90,15 @@ Caso deseje, altere esta senha em _Meu Perfil > Segurança e Senha_.`;
       aria-modal="true"
     >
       <div className="w-full max-w-lg rounded-3xl bg-[#080E22] border border-blue-500/40 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-3 duration-250">
-        {/* Header */}
         <div className="px-5 py-4 border-b border-slate-800 bg-slate-900/80 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400">
               <KeyRound className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white flex items-center gap-1.5">
-                <span>Redefinir Senha do Colaborador</span>
-              </h2>
+              <h2 className="text-sm font-bold text-white">Redefinir Acesso do Colaborador</h2>
               <p className="text-[11px] text-slate-400">
-                Liberação de nova credencial pelo supervisor imediato
+                Envio seguro de link oficial de recuperação via Supabase Auth
               </p>
             </div>
           </div>
@@ -148,19 +112,22 @@ Caso deseje, altere esta senha em _Meu Perfil > Segurança e Senha_.`;
           </button>
         </div>
 
-        {/* Informações do Colaborador */}
         <div className="p-5 space-y-4 text-xs">
           <div className="p-3.5 rounded-2xl bg-slate-900/70 border border-slate-800 flex items-center gap-3">
-            <img
-              src={colab.foto || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80'}
-              alt={colab.nome}
-              className="w-12 h-12 rounded-xl object-cover border border-blue-500/30 shrink-0"
-            />
+            {colab.foto ? (
+              <img
+                src={colab.foto}
+                alt={colab.nome}
+                className="w-12 h-12 rounded-xl object-cover border border-blue-500/30 shrink-0"
+              />
+            ) : (
+              <div className="w-12 h-12 rounded-xl bg-slate-800 border border-blue-500/30 text-blue-200 font-bold flex items-center justify-center shrink-0">
+                {colab.nome.slice(0, 2).toUpperCase()}
+              </div>
+            )}
             <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between">
-                <strong className="text-sm font-bold text-white truncate block">
-                  {colab.nome}
-                </strong>
+              <div className="flex items-center justify-between gap-2">
+                <strong className="text-sm font-bold text-white truncate block">{colab.nome}</strong>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 shrink-0">
                   {colab.matricula || 'SEM MATRÍCULA'}
                 </span>
@@ -171,8 +138,8 @@ Caso deseje, altere esta senha em _Meu Perfil > Segurança e Senha_.`;
               <div className="flex items-center gap-3 mt-1.5 text-[11px] text-slate-400">
                 <span className="flex items-center gap-1">
                   <Mail className="w-3 h-3 text-blue-400" />
-                  <span className="font-mono text-slate-300 truncate max-w-[160px]">
-                    {colab.email || `${colab.nome.toLowerCase().replace(/\s+/g, '.')}@turnocerto.com.br`}
+                  <span className="font-mono text-slate-300 truncate max-w-[190px]">
+                    {emailDestino || 'Sem e-mail cadastrado'}
                   </span>
                 </span>
                 <span className="flex items-center gap-1">
@@ -190,92 +157,27 @@ Caso deseje, altere esta senha em _Meu Perfil > Segurança e Senha_.`;
             </div>
           )}
 
-          {salvoComSucesso && (
-            <div className="p-3.5 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 text-xs space-y-2 animate-in fade-in">
+          {enviadoComSucesso && (
+            <div className="p-3.5 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 text-xs space-y-1 animate-in fade-in">
               <div className="flex items-center gap-2 font-bold text-emerald-300">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                <span>Senha atualizada com sucesso no banco de dados!</span>
+                <span>Link oficial disparado com sucesso!</span>
               </div>
-              <p className="text-[11px] text-emerald-300/80">
-                Envie as novas credenciais para o colaborador pelo WhatsApp ou copie o texto abaixo para informá-lo.
-              </p>
+              <p className="text-[11px] text-emerald-300/80">{statusMessage}</p>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Campo da Nova Senha */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-slate-300 font-semibold">
-                  Nova Senha Provisória <span className="text-red-400">*</span>
-                </label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={gerarSenhaAleatoria}
-                    className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-medium transition-colors hover:underline cursor-pointer"
-                  >
-                    <Sparkles className="w-3 h-3 text-blue-400" />
-                    <span>Gerar Nova</span>
-                  </button>
-                  <span className="text-slate-600">·</span>
-                  <button
-                    type="button"
-                    onClick={aplicarSenhaPadrao}
-                    className="text-[10px] text-amber-400 hover:text-amber-300 font-medium transition-colors hover:underline cursor-pointer"
-                  >
-                    Turno@2026
-                  </button>
-                </div>
-              </div>
-
-              <div className="relative">
-                <input
-                  type={showSenha ? 'text' : 'password'}
-                  required
-                  value={novaSenha}
-                  onChange={(e) => {
-                    setNovaSenha(e.target.value);
-                    setSalvoComSucesso(false);
-                  }}
-                  placeholder="Digite a nova senha provisória"
-                  className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 text-xs font-mono font-bold tracking-wide"
-                />
-                <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <button
-                  type="button"
-                  onClick={() => setShowSenha(!showSenha)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
-                  title={showSenha ? 'Ocultar' : 'Ver'}
-                >
-                  {showSenha ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-
-            {/* Como o funcionário deve logar */}
+          <form onSubmit={handleEnviarReset} className="space-y-4">
             <div className="p-3 rounded-xl bg-blue-950/20 border border-blue-500/20 text-[11px] text-slate-300 space-y-1.5">
               <div className="flex items-center gap-1.5 font-bold text-white">
                 <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
-                <span>Credenciais de Acesso deste Colaborador:</span>
+                <span>Segurança Zero-Trust:</span>
               </div>
-              <div className="grid grid-cols-2 gap-2 text-slate-300">
-                <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800">
-                  <span className="text-slate-400 block text-[10px]">Identificador / Login:</span>
-                  <span className="font-mono font-semibold text-blue-300 truncate block">
-                    {colab.email || colab.cpf || colab.matricula}
-                  </span>
-                </div>
-                <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800">
-                  <span className="text-slate-400 block text-[10px]">Nova Senha:</span>
-                  <span className="font-mono font-bold text-emerald-300 truncate block">
-                    {novaSenha || '---'}
-                  </span>
-                </div>
-              </div>
+              <p className="text-slate-400">
+                Por segurança, senhas nunca são exibidas ou gravadas em texto simples no banco de dados. Ao confirmar abaixo, o Supabase Auth envia um link temporário exclusivo para o e-mail cadastrado do colaborador.
+              </p>
             </div>
 
-            {/* Ações de Envio e Salvamento */}
             <div className="pt-2 flex flex-col sm:flex-row items-center gap-2">
               <button
                 type="button"
@@ -290,28 +192,31 @@ Caso deseje, altere esta senha em _Meu Perfil > Segurança e Senha_.`;
                 ) : (
                   <>
                     <Copy className="w-4 h-4 text-slate-400" />
-                    <span>Copiar Acesso</span>
+                    <span>Copiar Aviso</span>
                   </>
                 )}
               </button>
 
-              <button
-                type="button"
-                onClick={handleEnviarWhatsApp}
-                className="w-full sm:flex-1 py-2.5 px-3 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-semibold text-xs border border-emerald-600 flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-lg shadow-emerald-700/20"
-                title="Abrir WhatsApp com credenciais pré-preenchidas"
-              >
-                <MessageSquare className="w-4 h-4 text-white" />
-                <span>Enviar no WhatsApp</span>
-              </button>
+              {whatsappUrl && (
+                <a
+                  href={whatsappUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full sm:flex-1 py-2.5 px-3 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-semibold text-xs border border-emerald-600 flex items-center justify-center gap-1.5 transition-all"
+                  title="Avisar colaborador pelo WhatsApp"
+                >
+                  <MessageSquare className="w-4 h-4 text-white" />
+                  <span>Avisar no WhatsApp</span>
+                </a>
+              )}
 
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={isSubmitting || !emailDestino}
                 className="w-full sm:flex-1 py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-lg shadow-blue-600/30 active:scale-95 disabled:opacity-50"
               >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>{isSubmitting ? 'Salvando...' : 'Salvar no Banco'}</span>
+                <Send className="w-4 h-4" />
+                <span>{isSubmitting ? 'Enviando...' : 'Enviar Link por E-mail'}</span>
               </button>
             </div>
           </form>
