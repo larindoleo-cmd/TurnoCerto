@@ -35,7 +35,11 @@ export const LoginScreen: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!usuario.trim()) {
-      setErro('Informe seu e-mail, CPF ou matrícula de colaborador.');
+      setErro('Informe seu e-mail corporativo cadastrado no Supabase Auth.');
+      return;
+    }
+    if (!senha.trim()) {
+      setErro('Informe sua senha cadastrada no Supabase Auth.');
       return;
     }
 
@@ -236,10 +240,10 @@ export const LoginScreen: React.FC = () => {
           <div className="pt-2 border-t border-slate-800 space-y-2.5">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-semibold text-slate-400 flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Acesso Rápido de Demonstração:</span>
+                <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+                <span>Preencher E-mail Cadastrado:</span>
               </span>
-              <span className="text-[10px] text-slate-500">Clique para preencher</span>
+              <span className="text-[10px] text-slate-500">Insira a senha do Supabase Auth</span>
             </div>
 
             <div className="space-y-1.5">
