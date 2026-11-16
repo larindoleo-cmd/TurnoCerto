@@ -397,28 +397,69 @@ export function determineNextPunch(
   };
 }
 
+function addDaysYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, (d || 1) + days));
+  return dt.toISOString().slice(0, 10);
+}
+
+function normalizeHhMm(timeStr: string | undefined, fallback: string): string {
+  const raw = (timeStr || fallback).trim();
+  const parts = raw.split(':');
+  const h = String(Math.min(23, Math.max(0, Number(parts[0] || 0)))).padStart(2, '0');
+  const m = String(Math.min(59, Math.max(0, Number(parts[1] || 0)))).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+export function isCoverageActiveAtMoment(
+  cov: CoberturaProgramada,
+  referenceDate: Date = new Date(),
+  exigeAceite: boolean = false
+): boolean {
+  if (cov.status !== 'aprovada' && cov.status !== 'em_andamento') return false;
+  if (exigeAceite && cov.aceiteColaborador !== true) return false;
+  if (!cov.dataInicio || !cov.dataFim || cov.dataFim < cov.dataInicio) return false;
+
+  const hIni = normalizeHhMm(cov.horaInicio, '07:00');
+  const hFim = normalizeHhMm(cov.horaFim, '19:00');
+  const overnight = hFim <= hIni;
+  const refMs = referenceDate.getTime();
+  const toleranceMs = 30 * 60 * 1000;
+
+  let day = cov.dataInicio;
+  let guard = 0;
+  while (day <= cov.dataFim && guard < 366) {
+    const startMs = Date.parse(`${day}T${hIni}:00-03:00`);
+    const endDay = overnight ? addDaysYmd(day, 1) : day;
+    const endMs = Date.parse(`${endDay}T${hFim}:00-03:00`);
+    if (
+      Number.isFinite(startMs) &&
+      Number.isFinite(endMs) &&
+      refMs >= startMs - toleranceMs &&
+      refMs <= endMs + toleranceMs
+    ) {
+      return true;
+    }
+    day = addDaysYmd(day, 1);
+    guard++;
+  }
+  return false;
+}
+
 /**
- * Classifica o posto da batida comparando posto detectado, posto-base e coberturas vigentes.
+ * Classifica o posto da batida comparando posto detectado, posto-base e coberturas vigentes na janela exata.
  */
 export function resolvePunchClassification(
   postoBaseId: string | null | undefined,
   postoDetectadoId: string,
   coberturasAtivas: CoberturaProgramada[],
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  exigeAceite: boolean = false
 ): { classificacao: ClassificacaoPosto; coverageAssignment?: CoberturaProgramada } {
-  const dateBR = new Intl.DateTimeFormat('fr-CA', {
-    timeZone: 'America/Sao_Paulo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(referenceDate);
-
   const matchingCoverage = coberturasAtivas.find(
     (c) =>
       c.postoCoberturaId === postoDetectadoId &&
-      (c.status === 'aprovada' || c.status === 'em_andamento') &&
-      c.dataInicio <= dateBR &&
-      c.dataFim >= dateBR
+      isCoverageActiveAtMoment(c, referenceDate, exigeAceite)
   );
 
   if (postoBaseId && postoDetectadoId !== postoBaseId) {
@@ -436,6 +477,36 @@ export function resolvePunchClassification(
   }
 
   return { classificacao: 'posto_regular' };
+}
+
+export function isNetworkTransportError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: string; message?: string; status?: number; name?: string };
+  const code = String(e.code || '');
+  const msg = String(e.message || '');
+
+  // Erros explícitos de negócio/validação/permissão do Postgres/RPC NÃO são falhas de rede
+  if (
+    ['42501', '22023', 'P0002', '23P01', '23505', '23503', 'PGRST116'].includes(code) ||
+    /Fora de todos os postos|GPS inconclusivo|GPS indisponível|Apenas admin|Perfil de acesso|Violação de isolamento|Motivo obrigatório|Sem permissão|inválid|não encontrado/i.test(
+      msg
+    )
+  ) {
+    return false;
+  }
+
+  if (typeof e.status === 'number' && e.status >= 400 && e.status < 500) {
+    return false;
+  }
+
+  return (
+    e.name === 'AbortError' ||
+    e.name === 'TypeError' ||
+    /Failed to fetch|NetworkError|fetch|timeout|ECONNRESET|ECONNREFUSED|ENOTFOUND|network|offline|5\d\d/i.test(
+      msg
+    ) ||
+    (typeof navigator !== 'undefined' && navigator.onLine === false)
+  );
 }
 
 /**
@@ -564,11 +635,15 @@ export async function recordPontoEvento(
           colaboradorId: String(row.colaborador_id),
           postoCoberturaId: String(row.posto_cobertura_id),
           tipo: (row.tipo as CoberturaProgramada['tipo']) || 'cobertura',
-          dataInicio: String(row.data_inicio),
-          dataFim: String(row.data_fim),
-          horaInicio: String(row.hora_inicio || '07:00'),
-          horaFim: String(row.hora_fim || '19:00'),
+          dataInicio: String(row.data_inicio).slice(0, 10),
+          dataFim: String(row.data_fim).slice(0, 10),
+          horaInicio: String(row.hora_inicio || '07:00').slice(0, 5),
+          horaFim: String(row.hora_fim || '19:00').slice(0, 5),
           status: (row.status as CoberturaProgramada['status']) || 'aprovada',
+          aceiteColaborador:
+            row.aceite_colaborador === null || row.aceite_colaborador === undefined
+              ? null
+              : Boolean(row.aceite_colaborador),
           criadoEm: String(row.created_at || serverTimestamp),
         }));
       }
@@ -602,7 +677,7 @@ export async function recordPontoEvento(
     postoNome: detectedPosto.nome,
     tipoEvento,
     labelEvento: isDivergencia
-      ? `${labelMap[tipoEvento]} (Divergência de Posto)`
+      ? `${labelMap[tipoEvento]} (Outro Posto)`
       : isCobertura
       ? `${labelMap[tipoEvento]} (${classificacao === 'extra_programada' ? 'Extra Programada' : 'Cobertura Programada'})`
       : labelMap[tipoEvento],
@@ -618,6 +693,7 @@ export async function recordPontoEvento(
     fotoBiometriaUrl,
     metodoAutenticacao: metodo,
     verificationStatus: 'pendente',
+    revisaoPendente: false,
     classificacaoPosto: classificacao,
     postoBaseId: colaborador.condominioId || undefined,
     postoDetectadoId: detectedPosto.id,
@@ -628,7 +704,7 @@ export async function recordPontoEvento(
     motivoExcecao:
       motivoExcecao ||
       (isDivergencia
-        ? `Divergência de posto: ponto registrado em ${detectedPosto.nome} (lotação base: ${colaborador.postoNome || 'Matriz'})`
+        ? `Ponto registrado em outro posto (${detectedPosto.nome}); lotação base mantida em ${colaborador.postoNome || 'Matriz'}`
         : undefined),
     isCobertura: isCobertura || isDivergencia,
     postoOriginalId: colaborador.condominioId || undefined,
@@ -640,6 +716,7 @@ export async function recordPontoEvento(
   };
 
   if (!supabase) {
+    evento.revisaoPendente = true;
     enqueuePendingSync(evento);
     saveLocalEvento(evento);
     return {
@@ -680,24 +757,42 @@ export async function recordPontoEvento(
     }
 
     const resObj = rpcData as Record<string, unknown>;
+    const revisaoPendente = Boolean(resObj.revisao_pendente);
+    const serverDecisao = (resObj.decisao_geofence as StatusGeofence) || evento.decisaoGeofence || 'dentro_do_raio';
+    const serverPostoId = resObj.posto_detectado_id ? String(resObj.posto_detectado_id) : detectedPosto.id;
+    const serverPostoNome = resObj.posto_detectado_nome ? String(resObj.posto_detectado_nome) : detectedPosto.nome;
+
     evento.id = String(resObj.evento_id || evento.id);
     evento.comprovanteNumero = String(resObj.comprovante_numero || evento.comprovanteNumero);
     evento.serverTimestamp = String(resObj.server_timestamp || evento.serverTimestamp);
     evento.classificacaoPosto = (resObj.classificacao_posto as ClassificacaoPosto) || classificacao;
+    evento.decisaoGeofence = serverDecisao;
+    evento.geofenceStatus = serverDecisao;
+    if (resObj.distance_m !== undefined && resObj.distance_m !== null) {
+      evento.distanceM = Number(resObj.distance_m);
+    }
+    evento.postoDetectadoId = serverPostoId;
+    evento.postoDetectadoNome = serverPostoNome;
+    evento.condominioId = serverPostoId;
+    evento.condominioNome = serverPostoNome;
+    evento.postoNome = serverPostoNome;
+    evento.ambiguidadeDetectada = Boolean(resObj.ambiguidade_detectada);
     evento.coverageAssignmentId = resObj.coverage_assignment_id
       ? String(resObj.coverage_assignment_id)
       : coverageAssignmentId;
-    evento.verificationStatus = 'confirmado';
+    evento.revisaoPendente = revisaoPendente;
+    evento.verificationStatus = revisaoPendente ? 'pendente' : 'confirmado';
 
     const finalDivergencia = evento.classificacaoPosto === 'divergencia_posto';
-    const finalCobertura =
-      evento.classificacaoPosto === 'cobertura_programada' ||
-      evento.classificacaoPosto === 'extra_programada';
-    evento.isCobertura = finalDivergencia || finalCobertura;
+    const finalExtra = evento.classificacaoPosto === 'extra_programada';
+    const finalCobertura = evento.classificacaoPosto === 'cobertura_programada';
+    evento.isCobertura = finalDivergencia || finalExtra || finalCobertura;
     evento.labelEvento = finalDivergencia
-      ? `${labelMap[tipoEvento]} (Divergência de Posto)`
+      ? `${labelMap[tipoEvento]} (Outro Posto)`
+      : finalExtra
+      ? `${labelMap[tipoEvento]} (Extra Programada)`
       : finalCobertura
-      ? `${labelMap[tipoEvento]} (${evento.classificacaoPosto === 'extra_programada' ? 'Extra Programada' : 'Cobertura Programada'})`
+      ? `${labelMap[tipoEvento]} (Cobertura Programada)`
       : labelMap[tipoEvento];
 
     saveLocalEvento(evento);
@@ -709,15 +804,28 @@ export async function recordPontoEvento(
       isDuplicated: Boolean(resObj.duplicado),
       message: resObj.duplicado
         ? 'Batida idempotente já registrada anteriormente no servidor.'
+        : revisaoPendente
+        ? 'Ponto registrado como pendente de revisão do supervisor.'
         : finalDivergencia
-        ? `Ponto confirmado em "${detectedPosto.nome}". Divergência de posto registrada e supervisão notificada (seu posto-base permanece inalterado).`
+        ? `Ponto registrado em outro posto (${serverPostoNome}) — supervisor notificado.`
+        : finalExtra
+        ? `Extra programada confirmada em "${serverPostoNome}".`
         : finalCobertura
-        ? `Ponto confirmado como ${evento.classificacaoPosto === 'extra_programada' ? 'Extra Programada' : 'Cobertura Programada'} em "${detectedPosto.nome}".`
-        : 'Ponto registrado e confirmado transacionalmente no servidor.',
+        ? `Cobertura programada confirmada em "${serverPostoNome}".`
+        : `Dentro do seu posto — ponto confirmado em "${serverPostoNome}".`,
     };
   } catch (err) {
-    console.warn('Falha ao gravar ponto no Supabase; mantendo pendente para reenvio:', err);
+    if (!isNetworkTransportError(err)) {
+      const msg =
+        err && typeof err === 'object' && 'message' in err
+          ? String((err as { message: unknown }).message)
+          : 'Registro de ponto rejeitado pelo servidor.';
+      throw new Error(msg);
+    }
+
+    console.warn('Falha de rede ao gravar ponto no Supabase; mantendo pendente para reenvio:', err);
     evento.verificationStatus = 'pendente';
+    evento.revisaoPendente = true;
     enqueuePendingSync(evento);
     saveLocalEvento(evento);
     return {
@@ -733,14 +841,15 @@ export async function recordPontoEvento(
 /**
  * Reenvia eventos pendentes preservando idempotencyKey original.
  */
-export async function syncPendingPontoEventos(): Promise<{ synced: number; remaining: number }> {
+export async function syncPendingPontoEventos(): Promise<{ synced: number; remaining: number; rejected: number }> {
   const supabase = getSupabase();
   const queue = getPendingPontoQueue();
   if (!supabase || queue.length === 0) {
-    return { synced: 0, remaining: queue.length };
+    return { synced: 0, remaining: queue.length, rejected: 0 };
   }
 
   let synced = 0;
+  let rejected = 0;
   const remaining: PontoEvento[] = [];
 
   for (const item of queue) {
@@ -760,14 +869,33 @@ export async function syncPendingPontoEventos(): Promise<{ synced: number; remai
         p_credential_id: item.credentialId ?? null,
         p_foto_biometria_url: item.fotoBiometriaUrl ?? null,
         p_motivo_excecao: item.motivoExcecao ?? null,
-        p_device_info: { syncedFromQueue: true },
+        p_device_info: { syncedFromQueue: true, offlineSync: true },
       });
       if (error || !data) throw error || new Error('Erro RPC');
-      item.verificationStatus = 'confirmado';
+      const resObj = data as Record<string, unknown>;
+      const revisaoPendente = Boolean(resObj.revisao_pendente);
+      item.revisaoPendente = revisaoPendente;
+      item.verificationStatus = revisaoPendente ? 'pendente' : 'confirmado';
+      if (resObj.evento_id) item.id = String(resObj.evento_id);
+      if (resObj.comprovante_numero) item.comprovanteNumero = String(resObj.comprovante_numero);
+      if (resObj.server_timestamp) item.serverTimestamp = String(resObj.server_timestamp);
+      if (resObj.classificacao_posto) {
+        item.classificacaoPosto = resObj.classificacao_posto as ClassificacaoPosto;
+      }
       saveLocalEvento(item);
       synced++;
-    } catch {
-      remaining.push(item);
+    } catch (err) {
+      if (!isNetworkTransportError(err)) {
+        item.verificationStatus = 'rejeitado';
+        item.motivoExcecao =
+          err && typeof err === 'object' && 'message' in err
+            ? String((err as { message: unknown }).message)
+            : 'Rejeitado na validação do servidor';
+        saveLocalEvento(item);
+        rejected++;
+      } else {
+        remaining.push(item);
+      }
     }
   }
 
@@ -775,5 +903,6 @@ export async function syncPendingPontoEventos(): Promise<{ synced: number; remai
     localStorage.setItem(PONTO_SYNC_QUEUE_KEY, JSON.stringify(remaining));
   }
 
-  return { synced, remaining: remaining.length };
+  return { synced, remaining: remaining.length, rejected };
 }
+

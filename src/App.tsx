@@ -24,6 +24,7 @@ import { LoginScreen } from './components/LoginScreen';
 import { ChangePasswordModal } from './components/modals/ChangePasswordModal';
 import { RedefinirSenhaColaboradorModal } from './components/modals/RedefinirSenhaColaboradorModal';
 import { CollaboratorView } from './components/collaborator/CollaboratorView';
+import { AcessoBloqueadoScreen } from './components/collaborator/screens/AcessoBloqueadoScreen';
 
 const AppContent: React.FC = () => {
   const {
@@ -49,6 +50,11 @@ const AppContent: React.FC = () => {
     toastMessage,
     currentUser,
     authLoading,
+    authBlockedReason,
+    blockedAuthEmail,
+    syncError,
+    hasTruncatedSync,
+    syncWithSupabase,
   } = useApp();
 
   const { isInstallable, hasNativePrompt, isIOS, install } = usePWAInstall();
@@ -61,6 +67,10 @@ const AppContent: React.FC = () => {
         <p className="text-xs text-slate-400">Verificando sessão autenticada...</p>
       </div>
     );
+  }
+
+  if (authBlockedReason) {
+    return <AcessoBloqueadoScreen reason={authBlockedReason} email={blockedAuthEmail} />;
   }
 
   if (!currentUser) {
@@ -117,6 +127,22 @@ const AppContent: React.FC = () => {
       />
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-3.5 sm:px-6 pt-3 pb-24">
+        {(syncError || hasTruncatedSync) && (
+          <div className="mb-3 p-3 rounded-xl bg-amber-950/50 border border-amber-500/40 text-amber-200 text-xs flex flex-wrap items-center justify-between gap-2">
+            <span>
+              {syncError
+                ? `Falha parcial na sincronização com o servidor: ${syncError}`
+                : 'Aviso: Parte das listas atingiu o limite de carregamento por consulta. Utilize a busca ou filtros caso precise localizar registros antigos.'}
+            </span>
+            <button
+              type="button"
+              onClick={() => void syncWithSupabase()}
+              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-bold text-[11px] cursor-pointer"
+            >
+              Recarregar
+            </button>
+          </div>
+        )}
         {activeTab === 'operacao' && !isRhRole && <OperacaoTab />}
         {activeTab === 'equipe' && <EquipeTab />}
         {activeTab === 'postos' && !isRhRole && <PostosTab />}

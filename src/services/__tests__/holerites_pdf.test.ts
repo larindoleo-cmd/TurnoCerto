@@ -1,10 +1,53 @@
+import zlib from 'node:zlib';
 import {
   generateHoleritePdfBytes,
   generateComprovantePontoPdfBytes,
 } from '../documentService';
-import { saoPauloLocalInputToIsoUtc } from '../holeriteWorkflowService';
-import { HoleriteRegistro } from '../../types';
+import {
+  saoPauloLocalInputToIsoUtc,
+  buildHoleriteFromColaborador,
+  emitirLoteHolerites,
+} from '../holeriteWorkflowService';
+import { Colaborador, HoleriteRegistro } from '../../types';
 import { TestResultItem } from './gps_ponto.test';
+
+function extractPdfText(pdfBytes: Uint8Array): string {
+  const buf = Buffer.from(pdfBytes);
+  const parts: string[] = [buf.toString('latin1')];
+  let idx = 0;
+  while (idx < buf.length) {
+    const startIdx = buf.indexOf('stream', idx);
+    if (startIdx === -1) break;
+    if (startIdx >= 3 && buf.subarray(startIdx - 3, startIdx).toString('ascii') === 'end') {
+      idx = startIdx + 6;
+      continue;
+    }
+    let dataStart = startIdx + 6;
+    if (buf[dataStart] === 0x0d && buf[dataStart + 1] === 0x0a) dataStart += 2;
+    else if (buf[dataStart] === 0x0a) dataStart += 1;
+    else {
+      idx = dataStart;
+      continue;
+    }
+    const endMarker = buf.indexOf('endstream', dataStart);
+    if (endMarker === -1) break;
+    for (const trim of [0, 1, 2]) {
+      const candidate = buf.subarray(dataStart, endMarker - trim);
+      try {
+        const inflated = zlib.inflateSync(candidate).toString('latin1');
+        const decodedHex = inflated.replace(/<([0-9A-Fa-f]+)>/g, (_, hex: string) =>
+          Buffer.from(hex, 'hex').toString('latin1')
+        );
+        parts.push(inflated, decodedHex);
+        break;
+      } catch {
+        // try next trim length
+      }
+    }
+    idx = endMarker + 9;
+  }
+  return parts.join('\n');
+}
 
 export async function runHoleritesPdfTests(): Promise<{
   passed: number;
@@ -93,6 +136,82 @@ export async function runHoleritesPdfTests(): Promise<{
     utcIso === '2026-11-15T11:00:00.000Z',
     'Agendamento America/Sao_Paulo -> UTC (-03:00)',
     `2026-11-15T08:00 BRT => ${utcIso}`
+  );
+
+  // 4. Bloqueio de salário base ausente ou zerado na emissão de holerite
+  const colabSemSalario: Colaborador = {
+    id: 'colab-zero',
+    nome: 'Sem Salario',
+    matricula: '999',
+    funcao: 'Porteiro',
+    condominioId: 'posto-1',
+    postoNome: 'Posto 1',
+    status: 'no_posto',
+    jornada: '12x36',
+    tipoEscala: '12x36',
+    turno: 'diurno',
+    foto: '',
+    telefone: '',
+    cpf: '',
+    dataAdmissao: '2026-01-01',
+    bancoHoras: 0,
+    salarioBase: 0,
+  };
+  let threwZeroSalary = false;
+  try {
+    buildHoleriteFromColaborador(colabSemSalario, '2026-11', 'Novembro/2026', 'lote-1', 'rascunho');
+  } catch {
+    threwZeroSalary = true;
+  }
+  assert(
+    threwZeroSalary,
+    'Holerite: Rejeita colaborador sem salário base válido (<= 0)',
+    `threwZeroSalary=${threwZeroSalary}`
+  );
+
+  // 5. Publicação exige confirmação explícita das rubricas oficiais
+  const colabValido: Colaborador = { ...colabSemSalario, id: 'colab-ok', salarioBase: 2400 };
+  const blockedSemRubrica = await emitirLoteHolerites({
+    empresa: {
+      id: 'emp-1',
+      razaoSocial: 'Empresa Teste',
+      nomeFantasia: 'Teste',
+      cnpj: '00.000.000/0001-00',
+      inscricaoEstadual: '',
+      inscricaoMunicipal: '',
+      telefone: '1100000000',
+      whatsapp: '',
+      email: '',
+      endereco: '',
+      bairro: '',
+      cidade: 'São Paulo',
+      estado: 'SP',
+      cep: '',
+      responsavelOperacional: '',
+      cargoResponsavel: '',
+      chavePix: '',
+      logoUrl: '',
+      apresentacao: '',
+    },
+    colaboradores: [colabValido],
+    competencia: '2026-11',
+    mesReferenciaLabel: 'Novembro/2026',
+    modo: 'publicar_agora',
+    criadoPorNome: 'RH',
+    rubricasOficiaisConfirmadas: false,
+  });
+  assert(
+    !blockedSemRubrica.success && /rubricas oficiais/i.test(blockedSemRubrica.message),
+    'Holerite: Bloqueia publicação sem confirmação de rubricas oficiais',
+    blockedSemRubrica.message
+  );
+
+  // 6. PDF não contém alegação enganosa de ICP-Brasil e exibe FGTS Informativo no conteúdo decodificado
+  const pdfDecodedText = extractPdfText(pdfRes.bytes);
+  assert(
+    !/ICP-Brasil/i.test(pdfDecodedText) && /FGTS Depositado/i.test(pdfDecodedText),
+    'Holerite PDF: Sem alegação ICP-Brasil e com rótulo FGTS Informativo',
+    'Validado conteúdo textual decodificado do stream PDF'
   );
 
   return {

@@ -3,6 +3,8 @@ import {
   determineNextPunch,
   resolvePunchClassification,
   buildIdempotencyKey,
+  isCoverageActiveAtMoment,
+  isNetworkTransportError,
 } from '../pontoService';
 import {
   Colaborador,
@@ -223,6 +225,44 @@ export async function runGpsPontoTests(): Promise<{
     key1 === key2 && key1 !== key3,
     'Chave de Idempotência Determinística por Tentativa',
     `${key1} === ${key2} !== ${key3}`
+  );
+
+  // 12. isCoverageActiveAtMoment: janela horária real (inclusive noturna e exigeAceite)
+  const covNoturna: CoberturaProgramada = {
+    id: 'cov-night',
+    empresaId: 'emp-1',
+    colaboradorId: 'colab-1',
+    postoCoberturaId: 'posto-b',
+    tipo: 'cobertura',
+    dataInicio: '2026-11-20',
+    dataFim: '2026-11-20',
+    horaInicio: '19:00',
+    horaFim: '07:00',
+    status: 'aprovada',
+    aceiteColaborador: null,
+    criadoEm: '2026-11-20T12:00:00Z',
+  };
+  const dentroMadrugada = isCoverageActiveAtMoment(covNoturna, new Date('2026-11-21T05:30:00Z'), false); // 02:30 BRT
+  const foraHorario = isCoverageActiveAtMoment(covNoturna, new Date('2026-11-20T18:00:00Z'), false); // 15:00 BRT
+  const exigeAceiteSemAceite = isCoverageActiveAtMoment(covNoturna, new Date('2026-11-21T05:30:00Z'), true);
+  assert(
+    dentroMadrugada === true && foraHorario === false && exigeAceiteSemAceite === false,
+    'Janela Real de Cobertura (Noturna + exigeAceite)',
+    `dentroMadrugada=${dentroMadrugada}, fora=${foraHorario}, exigeAceite=${exigeAceiteSemAceite}`
+  );
+
+  // 13. Classificação de erros RPC vs falha de rede (nunca enfileirar rejeição de negócio como offline)
+  const errPerm = { code: '42501', message: 'Sem permissão de RLS' };
+  const errValidation = { code: '22023', message: 'Fora de todos os postos ativos' };
+  const errConflict = { code: '23P01', message: 'Conflito de horário' };
+  const errFetch = new TypeError('Failed to fetch');
+  assert(
+    !isNetworkTransportError(errPerm) &&
+      !isNetworkTransportError(errValidation) &&
+      !isNetworkTransportError(errConflict) &&
+      isNetworkTransportError(errFetch),
+    'Offline Queue: Erros Postgres/Negócio nunca caem na fila offline',
+    `42501=${isNetworkTransportError(errPerm)}, 22023=${isNetworkTransportError(errValidation)}, 23P01=${isNetworkTransportError(errConflict)}, fetch=${isNetworkTransportError(errFetch)}`
   );
 
   return {

@@ -1,0 +1,271 @@
+MODO DE EXECUÇÃO AMPLIADO — FAÇA TAMBÉM AS TAREFAS OPERACIONAIS QUE FOREM POSSÍVEIS
+Este bloco complementa e tem prioridade sobre instruções anteriores que apenas mandavam o responsável executar tarefas que o ambiente do AI Studio consiga realizar com segurança. Não se limite a escrever instruções: quando houver ferramenta, integração, CLI e autorização disponíveis, execute de verdade, registre evidências e informe os resultados. Quando não houver acesso, não simule a execução: prepare o comando/checklist exato e marque como AÇÃO MANUAL DO PROPRIETÁRIO.
+A. Descoberta de acessos e capacidades
+1. Antes de qualquer alteração, identifique quais capacidades estão efetivamente disponíveis nesta sessão: sincronização GitHub, terminal/CLI, acesso ao projeto Supabase, acesso ao Cloudflare, execução de testes e armazenamento de artefatos.
+2. Não presuma que estar conectado ao GitHub significa estar conectado ao Supabase ou Cloudflare. Verifique cada integração separadamente.
+3. Não peça que o proprietário cole service_role, senha do banco, token GitHub, CRON_SECRET, chave privada ou qualquer segredo no chat, prompt ou código. Use somente Secrets/variáveis protegidas e integrações autorizadas já disponíveis. Nunca imprima valores secretos; mostre apenas o nome da variável e se está configurada.
+4. Confirme o projeto Supabase pelo project_ref/nome e o repositório/branch GitHub antes de executar comandos remotos. Se houver mais de um projeto possível, pare e peça confirmação.
+B. Faça automaticamente tudo que for seguro no repositório
+1. Verifique a branch atual, git status, commits recentes e diferenças locais/remotas.
+2. Se houver suporte, crie uma branch de trabalho, por exemplo fix/turnocerto-auditoria-2026-11-14. Não altere diretamente a main, não force push e não descarte alterações do usuário.
+3. Faça um checkpoint commit na branch de trabalho somente se o ambiente permitir e se não houver alterações preexistentes não compreendidas. Informe o hash do commit. Se não puder criar branch/commit, explique o bloqueio e deixe os arquivos alterados organizados.
+4. Remova public/assets/aistudio/image_0e170b68.png do código servido e de qualquer referência no app. Verifique também se o arquivo está rastreado pelo Git. Não mostre nem copie o conteúdo da credencial encontrada.
+5. Mova screenshots, documentação interna e materiais de desenvolvimento para fora de public/, desde que isso não quebre referências necessárias da interface. Antes de remover outros arquivos, confira se são importados ou exibidos no app.
+6. Faça busca automatizada por secrets e credenciais hardcoded no repositório, sem imprimir os valores encontrados. Apresente somente caminho, tipo de risco e ação recomendada. Diferencie corretamente a chave anon/publishable da service_role; não classifique toda chave pública como vazamento.
+7. Revise .gitignore, arquivos .env*, source maps e build output. Garanta que arquivos .env, dumps, backups, documentos reais, capturas com dados pessoais e credenciais não entrem no commit.
+8. Execute npm ci (ou a variante exigida pelo lockfile), lint, testes, typecheck e build se o terminal estiver disponível. Não diga que passou sem mostrar o resultado real. Corrija os problemas encontrados e repita os testes.
+9. Ao final, apresente um resumo dos arquivos criados/alterados/removidos, resultados e commit/branch. Não publique em produção automaticamente.
+C. Faça inspeção e backup do Supabase se houver acesso autorizado
+1. Se a CLI Supabase estiver instalada e autenticada, confirme primeiro a identidade do projeto remoto e a versão da CLI. Não execute nada contra um projeto cuja identidade não possa ser confirmada.
+2. Faça inspeção somente leitura da estrutura, histórico de migrations, tabelas, colunas, funções/RPCs, policies RLS, buckets e configuração relevante. Compare o remoto com supabase/migrations/ local. Não altere o histórico remoto para fazê-lo “combinar” com os arquivos.
+3. Execute supabase migration list --remote (ou sintaxe equivalente da versão instalada) e supabase db push --dry-run --remote apenas para diagnóstico. Registre a saída não sensível. O dry-run não substitui revisão humana.
+4. Antes de qualquer migration ou alteração de segurança, tente gerar backup lógico do banco (roles, schema e dados) com a CLI Supabase compatível com a versão instalada, por exemplo supabase db dump. Salve os arquivos fora de public/, fora do Git e em local privado. Não marque backup concluído até confirmar que os arquivos existem, têm tamanho plausível e que o comando terminou sem erro.
+5. Atenção: dump do banco não é backup dos arquivos do Storage. Inventarie os buckets e objetos. Se houver acesso autorizado e ferramenta compatível, exporte também os objetos necessários para um local privado; caso contrário, pare e forneça ao proprietário as etapas manuais para preservar os arquivos. Não diga que o Storage está protegido apenas porque os metadados estão no banco.
+6. Se não houver CLI, credenciais autorizadas, acesso ao dashboard ou local seguro para guardar o backup, não invente nem simule. Gere um checklist preciso para o proprietário fazer backup pelo Supabase Dashboard/CLI antes de prosseguir.
+7. Faça backup antes de alterações, não depois. Se backup falhar ou não puder ser confirmado, pare as ações remotas que possam alterar dados. Continue somente com análise estática e correções locais reversíveis.
+D. Staging, migrations e execução remota
+1. Se já houver projeto Supabase de staging/dev identificado e autorizado, use-o para aplicar e testar migrations. Não crie projetos/branches pagos nem altere cobrança sem autorização explícita.
+2. Se staging não existir, prepare as migrations, testes e instruções de criação, mas não use produção como substituta de staging.
+3. Nunca execute db push, migration repair, db reset, DROP, TRUNCATE, alteração de dados em massa, remoção de buckets/objetos, mudança de senha, rotação de secret ou deploy de produção sem confirmação explícita do proprietário.
+4. Depois da revisão e autorização, a execução de migration deve ser feita em staging primeiro. Rode testes de integridade, RLS, RPC, ponto, documentos e holerites. Informe os resultados reais.
+5. Produção só pode ser alterada após: backup confirmado (banco e Storage quando aplicável), staging aprovado, diff revisado, plano de rollback preparado e confirmação explícita do proprietário.
+E. GitHub e Cloudflare
+1. Se o GitHub estiver conectado, sincronize somente a branch de trabalho e mostre os arquivos/commits enviados. Não faça merge em main sem autorização.
+2. Revise Actions/workflows, regras de branch, secrets referenciados e pipeline de build. Nunca imprima o conteúdo de secrets.
+3. Se houver acesso Cloudflare autorizado, inspecione Workers, Pages, bindings, variables, routes, cron triggers e logs relevantes. Não altere secrets, domínios, DNS, rotas, Cron ou deploy de produção sem autorização explícita.
+4. Se não houver acesso, gere os arquivos/configurações e instruções para o proprietário aplicar, identificando exatamente em qual painel e campo.
+F. Ações que continuam dependendo do proprietário
+Não tente executar a partir de screenshot, histórico ou credencial encontrada:
+1. Redefinir a senha da conta cuja credencial apareceu na captura e revogar sessões/tokens dessa conta, caso ela exista. O proprietário deve fazer isso no Supabase Auth/Dashboard ou em fluxo oficial de recuperação. Não autentique usando a senha exposta. A remoção da imagem do repositório não invalida uma senha que já foi exposta.
+2. Confirmar qual projeto Supabase é produção e qual é staging quando isso não puder ser provado pelos acessos disponíveis.
+3. Aprovar qualquer alteração irreversível ou migration em produção.
+4. Aprovar mudanças de secrets, domínio/DNS, rotas Cloudflare, publicação pública e merge na branch principal.
+5. Executar testes físicos que exigem celular, câmera, GPS real, rede móvel e presença no posto. O agente pode preparar o roteiro e analisar evidências, mas não pode afirmar que testou um aparelho físico se não o utilizou.
+G. Relatório obrigatório de execução — não misture concluído com recomendado
+Ao terminar, produza uma tabela com estas colunas: Ação, Status (Concluída / Parcial / Bloqueada / Manual), Evidência verificável, Risco restante, Próximo responsável.
+
+Separe claramente:
+- ações realmente executadas pelo agente;
+- arquivos/código apenas preparados;
+- comandos apenas sugeridos, mas não executados;
+- operações remotas feitas em staging;
+- operações de produção não executadas;
+- ações que dependem do proprietário.
+Não use expressões como “backup concluído”, “credencial revogada”, “migration aplicada”, “deploy publicado” ou “Storage protegido” sem evidência objetiva da operação. Se uma capacidade não estiver disponível, diga exatamente qual acesso ou ferramenta faltou e prossiga com o restante seguro.
+PROMPT
+Atue como engenheiro de software sênior, arquiteto React/TypeScript, especialista em Supabase/PostgreSQL/RLS, Storage, Cloudflare Workers, segurança de aplicações e sistemas de ponto eletrônico.
+
+Você está trabalhando no projeto EXISTENTE TurnoCerto. Não crie outro aplicativo, não reconstrua a arquitetura e não substitua a interface atual. Faça uma correção incremental, baseada no código REAL deste repositório/branch.
+OBJETIVO
+Auditar e corrigir a versão atual do TurnoCerto, preservando as duas experiências existentes (Gestão e Funcionário), a identidade visual azul-marinho, a captura/reconhecimento facial já implementados, o fluxo atual de escalas e as funcionalidades de RH que já existem.
+
+O trabalho precisa deixar o sistema confiável para uso com Supabase, GitHub e Cloudflare. Não marque uma funcionalidade como pronta só porque existe um botão/tela ou porque uma operação local retornou sucesso.
+REGRAS INEGOCIÁVEIS
+1. Antes de editar, leia o projeto completo, package.json, README, src/App.tsx, src/context/AppContext.tsx, todos os services envolvidos e TODAS as migrations em supabase/migrations/.
+2. Confirme branch, estado do Git e arquivos alterados. Não sobrescreva alterações existentes do usuário. Faça um checkpoint/branch de trabalho; não force push em main.
+3. Não execute migrations no Supabase de produção. Não use supabase db push, migration repair, db reset, DROP, TRUNCATE ou scripts SQL manuais contra produção. Gere migrations novas, idempotentes e revisáveis; explique como testar e aplicar em staging.
+4. Nunca coloque SUPABASE_SERVICE_ROLE_KEY, CRON_SECRET, tokens ou qualquer segredo em React/Vite, localStorage, arquivos public/, Git ou documentação que será publicada. Segredos ficam apenas em Supabase Edge Function/Cloudflare Secrets.
+5. Não reutilize nem escreva credenciais administrativas que apareçam em screenshots, dados de demonstração ou histórico. Remova o arquivo public/assets/aistudio/image_0e170b68.png, que contém uma captura antiga com credencial privilegiada legível. Mova documentação e screenshots de desenvolvimento de public/assets/aistudio/ para fora de public/. Remova senhas de exemplo do src/data/mockData.ts ou mova os dados exclusivamente para testes isolados, sem inclusão no bundle de produção.
+6. Não redesenhe nem reescreva o reconhecimento facial como parte da correção do GPS. Preserve o detector, modelos, threshold atual e fluxo visual enquanto testa a integração. Não afirmar prova de vida, anti-spoof, FAR ou FRR como capacidade validada sem implementação/teste demonstráveis.
+7. Não alterar a lotação principal nem a escala habitual do funcionário ao registrar ponto em outro posto. A batida deve guardar o posto real onde ocorreu em campos separados do posto-base.
+8. Não inventar sucesso. Se Supabase, Storage, Edge Function ou Worker não confirmar a operação, apresentar erro/pendência real. Não retornar “publicado”, “enviado”, “aprovado” ou “sincronizado” com mera alteração de state local.
+9. Não mudar cálculos de folha para fórmulas estimadas. Holerite oficial precisa utilizar dados oficiais de folha/importação ou regra explicitamente validada pela contabilidade.
+10. Mantenha compatibilidade com usuários já cadastrados e dados existentes. Faça backfill seguro e documentado; não apagar dados nem renomear migrations já aplicadas.
+FASE 0 — INSPEÇÃO E CHECKPOINT
+1. Mostre a branch atual, status do Git, estrutura de diretórios e migrations identificadas.
+2. Verifique se main contém mudanças pendentes. Crie uma branch de trabalho (por exemplo auditoria-correcao-nov-2026) somente se isso for suportado pelo ambiente e sem sobrescrever o trabalho existente.
+3. Antes de cada fase, liste os arquivos que pretende alterar e o risco.
+4. No final de cada fase, salve checkpoint/commit quando autorizado pelo ambiente. Não force push.
+5. Não presuma que o Supabase remoto está no mesmo estado das migrations locais. Se houver CLI/integrador autenticado e autorização, faça inspeção somente leitura e backup conforme o MODO DE EXECUÇÃO AMPLIADO acima. Sem esses acessos, não simule a consulta: forneça ao proprietário os comandos e passos manuais.
+FASE 1 — REMOVER EXPOSIÇÃO DE CREDENCIAL E ARTEFATOS DE DESENVOLVIMENTO
+1. Remova public/assets/aistudio/image_0e170b68.png do diretório público e do bundle.
+2. Mova arquivos Markdown, screenshots de conversa e materiais internos da pasta public/assets/aistudio/ para docs/ ou outro local não servido pelo Vite. Não copie conteúdo de credenciais para o novo destino.
+3. Remova campos de senha de dados demonstrativos em src/data/mockData.ts; se os dados forem necessários aos testes, use fixtures com credenciais sintéticas, isoladas e não ligadas ao Auth real.
+4. Procure em todo o repositório por credenciais hardcoded, service_role, tokens, senhas, chaves privadas e dados pessoais de demonstração. Não imprimir secrets em logs nem na resposta final. Diferencie chave pública Supabase anon/publishable de service role: a chave anon é destinada ao client, mas só é segura com RLS correta; service role nunca é client-side.
+5. Não tente autenticar usando a credencial mostrada na captura. Informe ao responsável para redefinir a senha no Supabase Auth e revogar sessões se a conta ainda existir.
+FASE 2 — UNIFICAR O CONTRATO DO ESQUEMA DE PONTO
+1. Compare supabase/migrations/20261108100003_schema_operacional_rh.sql, src/context/AppContext.tsx e supabase/migrations/20261113100001_gps_multiposto_coberturas.sql.
+2. O schema/frontend usam entrada_1, saida_1, entrada_2, saida_2, mas a RPC registrar_ponto_transacional usa entrada1, saida1, entrada2, saida2 sem sublinhado. Corrija para um único nome canônico, preferencialmente preservar os nomes com sublinhado que já existem no schema inicial e nos mapeamentos do frontend.
+3. Não criar colunas duplicadas sem uma justificativa de compatibilidade. Criar migration nova para backfill/compatibilidade apenas se o schema remoto já tiver sido criado de outra forma. Primeiro descrever os dois cenários.
+4. Fazer ponto_eventos ser a trilha de eventos imutável/fonte de verdade. O espelho diário pontos deve ser uma projeção derivada dos eventos, não a única fonte. Definir como suportar mais de quatro batidas, jornadas extras e múltiplos turnos no mesmo dia sem sobrescrever registro anterior.
+5. Garantir idempotência também sob chamadas simultâneas: a chave precisa ter constraint/índice único, escopo apropriado e retorno do evento existente em repetição.
+6. Em syncWithSupabase, mapear os campos canônicos corretamente e sinalizar erros de consulta, paginação e última sincronização. Não deixar erros ocultos produzir telas com dados desatualizados como se fossem atuais.
+FASE 3 — GEOFENCE SERVER-SIDE E REGRA DE MULTIPOSTOS
+A regra de negócio obrigatória é:
+- O posto habitual do funcionário é o cadastro/lotação dele.
+- Qualquer posto ATIVO, CALIBRADO e cadastrado na mesma empresa pode ser uma área válida para bater ponto.
+- Estando dentro do posto habitual, classificar como posto_regular.
+- Estando dentro de outro posto e com cobertura/extra aprovada para aquele colaborador, posto, data e hora, classificar como cobertura_programada ou extra_programada.
+- Estando dentro de outro posto da empresa sem programação, NÃO bloquear: registrar como divergencia_posto, salvar evidências e notificar supervisão/RH.
+- Bloquear somente quando o servidor tiver prova confiável de que a localização está fora de TODOS os postos ativos/calibrados da empresa.
+- Se GPS estiver ausente ou inconclusivo, pedir nova leitura ou fluxo de exceção formal e auditado. Nunca substituir a posição real pelas coordenadas do posto; nunca inventar latitude/longitude.
+- Não alterar colaboradores.condominio_id, posto-base, escala, jornada ou lotação por causa da batida.
+Implementação obrigatória:
+1. A RPC registrar_ponto_transacional deve recalcular a geofence no Postgres usando p_latitude, p_longitude, p_accuracy_m e os postos de condominios pertencentes a v_colab.empresa_id e ativos.
+2. O servidor precisa selecionar o posto detectado. Não confiar em p_posto_detectado_id, p_decisao_geofence, p_distance_m ou p_ambiguidade_detectada como prova. Esses campos do cliente podem ser ignorados ou usados apenas para telemetria, nunca para autorizar.
+3. Usar PostGIS se estiver habilitado/configurado; caso contrário, implementar Haversine em SQL com validação de latitude/longitude e limites numéricos. Não adicionar extensões silenciosamente sem verificar sua disponibilidade.
+4. Validar p_latitude entre -90 e 90, p_longitude entre -180 e 180, precisão positiva, precisão máxima da empresa e raio do posto.
+5. Considerar precisão GPS na fronteira: dentro confiável, fora confiável e inconclusivo. A margem de erro não pode transformar proximidade incerta em “fora de todos os postos”.
+6. Carregar max_gps_accuracy_m da empresa e de fato aplicá-lo; hoje v_max_acc é carregado mas não é aplicado à decisão.
+7. Se algum posto ativo estiver sem coordenadas, criar alerta de calibração e relatório para o gestor. Não declarar que a empresa não tem posto válido sem apontar postos sem coordenadas. A operação de produção deve exigir que todos os postos de uso estejam calibrados; se não estiverem, usar exceção administrativa controlada, nunca geolocalização inventada.
+8. O servidor deve gravar a decisão final, a distância calculada, precisão, posto detectado, posto-base, versão da regra/raio, timestamp de servidor e motivo. Preservar o comprovante e a trilha de auditoria.
+9. A exceção excecao_autorizada só pode ser usada por perfil autorizado e com motivo obrigatório; funcionário comum não pode autoautorizar fora da geofence.
+10. Atualizar frontend para mostrar mensagens claras: “Dentro do seu posto”, “Extra programada”, “Cobertura programada”, “Ponto registrado em outro posto — supervisor notificado”, “GPS inconclusivo — tente novamente”, “Fora de todos os postos — registro bloqueado”.
+11. Preservar a captura/reconhecimento facial atual. O ponto deve continuar exigindo o fluxo de identidade existente antes de chamar a RPC.
+12. O modo offline deve mostrar Pendente de sincronização, nunca “Confirmado”. Ao sincronizar, o servidor revalida tudo. Se não houver evidência suficiente no momento do registro, não aprovar silenciosamente; criar revisão/ocorrência auditada.
+FASE 4 — COBERTURAS, EXTRAS E SUBSTITUIÇÕES
+1. Manter coberturas_programadas separada do posto-base e escala original.
+2. Verificar colaborador, empresa, posto de cobertura, tipo, status, aceite quando exigido, data e horário exatos no servidor.
+3. Corrigir resolvePunchClassification() e a RPC para considerar hora_inicio e hora_fim, não só data.
+4. Tratar horários que atravessam a meia-noite corretamente, convertendo início/fim em intervalos absolutos com timezone America/Sao_Paulo.
+5. Corrigir hasCoverageConflict() e o trigger fn_validar_conflito_cobertura(): não declarar conflito apenas porque uma das escalas é noturna. Comparar interseção real dos intervalos temporais e dias abrangidos.
+6. Criar uma única regra de conflito compartilhada (mesma semântica no frontend e banco); o banco é autoridade final.
+7. Na execução de uma cobertura/extra, gravar histórico e notificação persistente para o supervisor/RH na mesma transação da batida. A notificação não pode depender de setState no React.
+8. Hoje RegistroPontoModal.tsx chama a função de alerta local antes da RPC. Mover a atualização visual para depois de recordPontoEvento retornar confirmação. Se o RPC falhar, não exibir execução concluída.
+9. Não atualizar o posto habitual do funcionário e não reescrever a escala original. Usar o registro temporário de cobertura como referência do ponto.
+10. Revisar substituição emergencial para que ausência/substituição em um dia não transforme o status permanente do trabalhador em falta sem controle de período e fluxo de retorno.
+11. Criar testes para sobreposição de horário diurno/noturno, turno cruzando meia-noite, horário exatamente no limite, cancelamento, recusa, aceite e execução no posto errado.
+FASE 5 — RLS, AUTORIZAÇÃO E FUNÇÕES SECURITY DEFINER
+Revisar todas as policies do projeto, com foco em 20261113100004_notificacoes_rls_hardening.sql.
+
+Corrigir:
+1. ponto_eventos: remover INSERT direto de authenticated; permitir criação somente pela RPC segura. Funcionário só consulta os próprios eventos; RH/supervisor consulta dentro da empresa conforme papel.
+2. pontos: remover FOR ALL para funcionário. O espelho não pode ser editado diretamente pelo navegador; escrita por RPC/serviço controlado.
+3. documento_historico, holerite_eventos e audit_logs: retirar INSERT direto de usuário comum. Histórico/auditoria só pelo servidor/RPC autorizada.
+4. notificacoes_sistema: restringir INSERT a serviço/RPC. Usuário só pode marcar a própria notificação como lida, sem alterar empresa, destinatário, papel, título, mensagem, referência ou categoria.
+5. documento_solicitacoes: funcionário não pode editar a linha completa. Criar RPC com campos específicos permitidos (ex.: confirmação de envio) e validar estado/transição no servidor.
+6. postos: é tabela legada/espelho com isolamento por empresa incompleto. Tornar inacessível ao cliente ou adicionar empresa_id, backfill validado, trigger e policies estritas. A tabela canônica de postos é condominios.
+7. empresa_info: decidir se é global ou por empresa. Se por tenant, adicionar empresa_id e RLS; se global, restringir leitura e escrita conforme o desenho real. Eliminar consultas arbitrárias .limit(1) para identificar empresa.
+8. midias_operacionais_select: não permitir leitura geral de imagens/anexos por qualquer usuário da empresa sem checar caminho e titular. Restringir por pasta/empresa/papel.
+9. Validar que profiles.role, empresa_id e colaborador_id não podem ser alterados pelo próprio titular para ganhar permissão.
+10. Exigir perfil e vínculo válidos; se auth user não estiver ligado corretamente, negar o acesso com mensagem orientando suporte/RH, sem role silenciosamente padrão.
+11. Em todas as funções SECURITY DEFINER, fixar search_path, validar auth.uid() e o escopo da empresa, revisar grants e revogar execução de PUBLIC/`anon` quando não for necessária.
+12. Para publicar_lotes_holerites_agendados(), revogar EXECUTE de PUBLIC, anon e authenticated, conceder apenas ao service_role/servidor autorizado; conferir privilégios efetivos no banco. A Edge Function continua protegida por CRON_SECRET.
+13. Criar testes RLS com dois tenants, funcionário, supervisor, RH e admin. O usuário de uma empresa nunca pode ler/escrever dados da outra.
+Não reintroduzir policies USING (true) ou WITH CHECK (true) em tabelas pessoais, ponto, documento, holerite ou financeiro.
+FASE 6 — STORAGE PRIVADO E DOCUMENTOS
+Preservar o fluxo RH → funcionário já existente, mas torná-lo transacional e confiável.
+Buckets
+1. Confirmar configuração real dos buckets.
+2. documentos-funcionarios, documentos-atestados e documentos-holerites devem continuar privados, com estrutura <empresa_id>/<colaborador_id>/<arquivo> e RLS por empresa/titular/RH.
+3. Os buckets fotos-colaboradores e ocorrencias-anexos aparecem criados com public=true; avaliar os objetos reais, migrar/validar e tornar privados se contiverem dados de pessoa, documento ou operação. Uma policy RLS não protege o download de bucket público.
+4. Usar URL assinada com validade curta para conteúdo privado. Não retornar arquivoUrl público como fallback automático para documento sensível.
+5. Não deletar os objetos antigos antes de verificar backup, migração e leitura por usuário autorizado.
+Solicitação do RH para o funcionário
+- RH solicita tipo/título/instrução/prazo/obrigatoriedade.
+- Salvar protocolo em documento_solicitacoes.
+- Notificar o titular.
+- Funcionário vê a pendência, envia PDF/JPG/PNG e acompanha análise.
+- RH aprova, recusa ou solicita atualização com observação.
+- Funcionário recebe notificação e vê o histórico.
+Pedido do funcionário ao RH
+O app hoje cria somente uma notificação simples do pedido do funcionário. Criar entidade estruturada para pedidos iniciados pelo colaborador, com protocolo, tipo, motivo, data, status, responsável RH, resposta, anexos e histórico. O RH precisa de uma fila específica para responder e concluir; o funcionário deve consultar o andamento.
+Atomicidade e falhas
+1. Se Storage upload falhar, não criar status de documento enviado.
+2. Se upload funcionar e INSERT de metadados falhar, apagar objeto órfão ou registrar fila de reconciliação.
+3. Se atualização de solicitação, histórico ou notificação falhar, não retornar sucesso total sem indicar operação parcial e mecanismo de retry. Preferir RPC transacional/Edge Function.
+4. Todas as ações devem ser idempotentes para evitar dois uploads/duas solicitações ao repetir clique.
+5. Validar MIME real/magic bytes, tamanho, nomes de arquivo, hash e extensão; não confiar apenas no nome informado pelo navegador.
+6. Não registrar CPF, laudos ou conteúdo documental em logs de console.
+FASE 7 — HOLERITES, PDF, AGENDA E CIÊNCIA
+1. Preservar a geração de PDF real por pdf-lib; manter teste que valida %PDF- e hash.
+2. Não usar os cálculos aproximados de buildHoleriteFromColaborador() para publicar holerites oficiais. Criar fluxo de importação de folha calculada/validada ou exigir confirmação de dados oficiais. Não publicar com salário default ou percentuais genéricos. Validar rubricas com a contabilidade.
+3. Revisar o campo descontoFGTS: o nome/cálculo/posição no líquido precisam de validação contábil e não podem ser apresentados como desconto do empregado sem comprovação.
+4. A emissão de lote só pode marcar PDF como publicado/agendado depois que o arquivo for gravado no bucket privado, metadados persistidos, hash validado e operação confirmada. Se upload falhar, item e lote ficam em erro/pendente; nenhuma notificação de disponibilidade pode ser enviada.
+5. Se Supabase estiver indisponível, impedir a mensagem “publicado”, “agendado” ou “salvo no RH”. No máximo oferecer prévia local com rótulo explícito não salvo no servidor.
+6. Na retificação: preparar PDF novo, calcular hash, upload, inserir novo registro, verificar; somente após sucesso marcar versão anterior como retificada. Não esconder a versão anterior antes da nova estar disponível.
+7. Evitar publicar/notificar duas vezes quando cron for repetido. Usar idempotência por lote/holerite.
+8. A função de cron deve aceitar apenas execução do backend autorizado. Garantir EXECUTE apenas para service_role ou chamada server-side equivalente. Não chamar a RPC sensível diretamente do browser.
+9. Ciência de holerite deve ser nomeada Ciência confirmada ou Recebimento confirmado, não Assinado, salvo implementação real de assinatura qualificada. O comentário da migration já esclarece que a RPC atual não é ICP-Brasil.
+10. Não permitir que o browser forneça o SHA-256 como valor de confiança quando o hash ainda não está salvo. Servidor deve validar hash do PDF efetivamente armazenado.
+11. Guardar trilha de ciência: usuário Auth titular, timestamp do servidor, declaração exibida/versão, ID/competência, hash do PDF e evento de auditoria. Não converter ciência em concordância com as verbas.
+12. A agenda atual usa Cloudflare Cron a cada cinco minutos; deixar explícito que a publicação ocorre no próximo ciclo. Adicionar alerta operacional se Worker ou Edge Function falhar e painel de tentativas.
+13. Verificar que .env/Vite não contém service key. Secrets ficam em Supabase Edge Function e Cloudflare Worker.
+FASE 8 — AUTENTICAÇÃO E SEPARAÇÃO DE TELAS
+1. Preservar o login com supabase.auth.signInWithPassword().
+2. Em syncSessionUser(), tratar erro de .maybeSingle() e perfil ausente/duplicado. Não escolher role a partir de dado controlado pelo usuário.
+3. Para funcionário, exigir vínculo único entre Auth UID, perfil, funcionário e empresa. Para RH/supervisor/admin, exigir perfil válido com papel autorizado e empresa atribuída.
+4. Se perfil não for válido, encerrar o fluxo de entrada e mostrar erro seguro. Nunca abrir tela administrativa por fallback.
+5. Conferir no banco, não somente em React, quais papéis podem executar cada RPC.
+6. Preservar tela do funcionário separada da gestão. Não mostrar abas de Operação/Postos ao funcionário. RH permanece com seu conjunto de permissões separado do supervisor/admin.
+7. Melhorar estados de sincronização, carregamento, erro e última sincronização. Não mostrar dados mock como dados de produção.
+FASE 9 — UX, AUDITORIA E TESTES DE ACEITE
+Manter identidade visual e estrutura. Corrigir estados e textos conforme as operações reais.
+
+Criar/atualizar testes automatizados para:
+Ponto/GPS
+- usuário entra no posto habitual;
+- funcionário do posto A bate no B cadastrado sem extra: permite, divergencia_posto, notifica supervisão/RH, não altera posto-base nem escala;
+- funcionário do A bate no B com cobertura aprovada, dentro da data/hora: cobertura_programada;
+- funcionário executa extra aprovada: extra_programada;
+- bate antes/depois da janela de cobertura: não classifica como cobertura;
+- fora de todos os postos, com precisão confiável: bloqueia;
+- geofence inconclusiva/baixa precisão/GPS indisponível: pede nova leitura, não classifica falsamente como fora;
+- chamada direta à RPC com p_decisao_geofence='dentro_do_raio' mas coordenadas fora: rejeitar;
+- posto inativo/outro tenant: rejeitar;
+- idempotência sob clique duplicado/duas requisições;
+- vários turnos/batidas no mesmo dia não sobrescrevem evento;
+- funcionário conserva posto e escala originais.
+Coberturas
+- faixa diurna, noturna, troca de dia, início/fim na fronteira;
+- intervalos adjacentes não conflitam;
+- intervalos que realmente se sobrepõem conflitam;
+- cancelada/recusada não bloqueia novo turno;
+- aceite obrigatório/dispensado conforme configuração;
+- notificação só após sucesso da transação.
+Documentos
+- pedido RH → funcionário notificado;
+- upload bem-sucedido em bucket privado;
+- falha Storage/DB/notification/histórico;
+- aprovação, recusa e atualização solicitada;
+- pedido do funcionário ao RH com protocolo/status/resposta;
+- URL assinada expira e não funciona sem autorização;
+- isolamento entre empresas e funcionários.
+Holerites
+- PDF binário válido, hash e Storage path;
+- falha no Storage impede publicação;
+- cron repete sem duplicar;
+- retificação falha sem esconder a versão anterior;
+- ciência do titular apenas uma vez e rotulada corretamente;
+- funcionário só lê holerite publicado próprio; RH lê apenas a própria empresa.
+Segurança / auth
+- sem sessão não acessa módulos;
+- perfil ausente ou role inválido é negado;
+- funcionário não lê/edita outro funcionário;
+- supervisor/RH/admin respeitam permissões de empresa e função;
+- tentar inserir direto em tabela de evento, histórico, auditoria e notificação não deve contornar RPC.
+Verificação de código
+Executar quando as dependências estiverem disponíveis:
+- npm ci --legacy-peer-deps
+- npm run lint
+- npm test
+- npm run build
+Se algum comando falhar, informar o erro exato e não afirmar que passou. Atualizar GitHub Actions se necessário para Node compatível e instalar dependências de forma reprodutível.
+FASE 10 — MIGRATIONS E ENTREGA PARA O RESPONSÁVEL
+1. Criar apenas migrations novas com timestamp padrão do Supabase (14 dígitos + nome). Não editar migrations antigas que possam já estar aplicadas.
+2. Existem arquivos com prefixo de 8 dígitos (20261108_..., 20261110_...). Não renomear automaticamente. Anotar que o responsável precisa comparar supabase migration list --remote e conferir supabase_migrations.schema_migrations antes de qualquer reconciliação.
+3. Não aplicar SQL no banco remoto. Gerar scripts de forma incremental, idempotente e com COMMENT ON quando útil.
+4. Criar arquivos SQL de testes RLS e teste de geofence para rodar em staging.
+5. Atualizar .env.example somente com nomes de variáveis e placeholders, nunca secrets reais.
+6. Remover o SQL antigo embutido de SupabaseSettingsModal.tsx; direcionar para migrations versionadas e corrigir testSupabaseConnection() para diferenciar rede, chave, tabela inexistente e RLS.
+7. Não executar nem copiar supabase/04_SEGURANCA_E_RLS.sql; ele contém permissões abertas. Não executar scripts de limpeza/seed como rotina de produção.
+CRITÉRIOS PARA DECLARAR CONCLUÍDO
+Só marcar cada fase como concluída quando:
+- código foi alterado;
+- migrations/testes relevantes foram criados;
+- os testes passaram ou o bloqueio foi descrito;
+- os fluxos de erro foram tratados;
+- nenhum segredo foi adicionado ao client ou repositório;
+- o visual facial existente foi preservado;
+- as diferenças entre local, staging e produção foram explicitadas.
+FORMATO OBRIGATÓRIO DA SUA RESPOSTA FINAL
+Entregar ao responsável:
+1. Resumo do que foi corrigido.
+2. Lista exata dos arquivos alterados/criados/removidos.
+3. Novas migrations, ordem e finalidade.
+4. Comandos que ele precisa executar manualmente no Supabase, GitHub e Cloudflare.
+5. Quais migrations NÃO devem ser executadas ou quais exigem verificação do histórico remoto.
+6. Resultados reais de lint, testes, build e CI, sem inventar sucesso.
+7. Testes de ponto, cobertura, documento e holerite que ainda precisam ser feitos em aparelho/ambiente real.
+8. Riscos que continuam abertos.
+Comece agora pela inspeção/checkpoint e avance pelas fases internamente sem pedir que eu repita informações que estão no repositório. Se uma parte exigir acesso ao Supabase ou Cloudflare que você não possui, prepare o código/migration e descreva com precisão a etapa manual, mas não finja que foi executada.

@@ -72,6 +72,43 @@ export async function runCoberturasTests(): Promise<{
   });
   assert(afterCancel === null, 'Coberturas: Ignora coberturas canceladas e recusadas', 'Null esperado');
 
+  // 5. Turno noturno contíguo (07:00-19:00 seguido de 19:00-07:00) NÃO conflita (intervalo semiaberto)
+  const nightContiguous = hasCoverageConflict(existing, {
+    colaboradorId: 'colab-1',
+    dataInicio: '2026-11-20',
+    dataFim: '2026-11-20',
+    horaInicio: '19:00',
+    horaFim: '07:00',
+  });
+  assert(
+    nightContiguous === null,
+    'Coberturas: Turno noturno 19:00-07:00 contíguo a 07:00-19:00 não conflita',
+    'Null esperado'
+  );
+
+  // 6. Cobertura noturna (22:00-06:00) conflita com turno da madrugada seguinte (02:00-08:00)
+  const nightCov = [
+    makeCov({
+      id: 'cov-night-1',
+      dataInicio: '2026-11-20',
+      dataFim: '2026-11-20',
+      horaInicio: '22:00',
+      horaFim: '06:00',
+    }),
+  ];
+  const crossMidnightConflict = hasCoverageConflict(nightCov, {
+    colaboradorId: 'colab-1',
+    dataInicio: '2026-11-21',
+    dataFim: '2026-11-21',
+    horaInicio: '02:00',
+    horaFim: '08:00',
+  });
+  assert(
+    crossMidnightConflict?.id === 'cov-night-1',
+    'Coberturas: Detecta sobreposição após virada da meia-noite (22:00-06:00 vs 02:00-08:00)',
+    `Conflito=${crossMidnightConflict?.id}`
+  );
+
   return {
     passed: results.filter((r) => r.passed).length,
     failed: results.filter((r) => !r.passed).length,

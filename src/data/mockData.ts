@@ -186,7 +186,6 @@ export const INITIAL_COLABORADORES: Colaborador[] = [
     bancoHoras: 12,
     salarioBase: 2450.0,
     email: 'carlos.santos@turnocerto.com.br',
-    senha: 'Turno@2026',
     role: 'funcionario',
     turnoInicio: '07:00',
     turnoFim: '19:00',
@@ -218,7 +217,6 @@ export const INITIAL_COLABORADORES: Colaborador[] = [
     bancoHoras: 18,
     salarioBase: 2950.0,
     email: 'laurindo.carmo@turnocerto.com.br',
-    senha: 'Turno@2026',
     role: 'funcionario',
     turnoInicio: '07:00',
     turnoFim: '19:00',
@@ -252,7 +250,7 @@ export const INITIAL_HOLERITES: HoleriteRegistro[] = [
     bonusAssiduidade: 180.0,
     bonusAtivo: true,
     liquidoReceber: 3102.35,
-    statusEnvio: 'Assinado',
+    statusEnvio: 'Recebimento confirmado',
     dataEmissao: '05/04/2026',
   },
   {
@@ -275,7 +273,7 @@ export const INITIAL_HOLERITES: HoleriteRegistro[] = [
     bonusAssiduidade: 180.0,
     bonusAtivo: true,
     liquidoReceber: 3021.6,
-    statusEnvio: 'Assinado',
+    statusEnvio: 'Recebimento confirmado',
     dataEmissao: '05/03/2026',
   },
   {
@@ -298,7 +296,7 @@ export const INITIAL_HOLERITES: HoleriteRegistro[] = [
     bonusAssiduidade: 180.0,
     bonusAtivo: true,
     liquidoReceber: 2981.65,
-    statusEnvio: 'Assinado',
+    statusEnvio: 'Recebimento confirmado',
     dataEmissao: '05/02/2026',
   },
 ];

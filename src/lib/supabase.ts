@@ -62,19 +62,48 @@ export function getSupabase(): SupabaseClient | null {
 
 export async function testSupabaseConnection(url: string, key: string): Promise<{ success: boolean; message: string }> {
   try {
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      return { success: false, message: 'URL deve começar com https://' };
+    const trimmedUrl = url.trim();
+    const trimmedKey = key.trim();
+    if (!trimmedUrl.startsWith('https://')) {
+      return { success: false, message: 'URL inválida: utilize um endpoint HTTPS do projeto Supabase.' };
     }
-    const testClient = createClient(url, key);
-    // Ping primary tables
-    const { error: condoErr } = await testClient.from('condominios').select('id').limit(1);
-    const { error: colabErr } = await testClient.from('colaboradores').select('id').limit(1);
+    if (trimmedKey.length < 20) {
+      return { success: false, message: 'Chave pública (Anon Key) parece incompleta.' };
+    }
 
-    if (condoErr && colabErr) {
-      if (condoErr.message.includes('API key') || condoErr.message.includes('JWT') || condoErr.code === 'PGRST301') {
-        return { success: false, message: `Falha na autenticação: ${condoErr.message}` };
+    const testClient = createClient(trimmedUrl, trimmedKey);
+    const [{ error: condoErr }, { error: authErr }] = await Promise.all([
+      testClient.from('condominios').select('id').limit(1),
+      testClient.auth.getSession(),
+    ]);
+
+    if (authErr && /fetch|network|timeout/i.test(authErr.message)) {
+      return { success: false, message: `Endpoint Supabase inacessível pela rede: ${authErr.message}` };
+    }
+
+    if (condoErr) {
+      const msg = condoErr.message || '';
+      const code = condoErr.code || '';
+
+      if (/Failed to fetch|NetworkError|ENOTFOUND|ERR_NAME_NOT_RESOLVED/i.test(msg)) {
+        return { success: false, message: `Falha de rede ao alcançar o Supabase: ${msg}` };
       }
-      return { success: true, message: 'Conectado ao Supabase! (Tabelas prontas para execução do pacote SQL)' };
+      if (code === 'PGRST301' || /API key|JWT|Invalid authentication/i.test(msg)) {
+        return { success: false, message: `Credencial inválida (URL/Anon Key rejeitada): ${msg}` };
+      }
+      if (code === '42P01' || code === 'PGRST205' || /relation .* does not exist|schema cache/i.test(msg)) {
+        return {
+          success: false,
+          message: 'Projeto acessível, mas o schema/tabelas ainda não existem. Aplique as migrações via CLI (supabase db push).',
+        };
+      }
+      if (code === '42501' || /permission denied|row-level security/i.test(msg)) {
+        return {
+          success: true,
+          message: 'Conexão validada! RLS ativo protegendo as tabelas (faça login para carregar os dados do tenant).',
+        };
+      }
+      return { success: false, message: `Erro ao consultar banco (${code || 'desconhecido'}): ${msg}` };
     }
 
     return { success: true, message: 'Conexão com Supabase e tabelas operacionais validada com sucesso!' };
@@ -83,3 +112,4 @@ export async function testSupabaseConnection(url: string, key: string): Promise<
     return { success: false, message: errorMsg };
   }
 }
+

@@ -21,6 +21,8 @@ import {
   NotificacaoSistema,
   SolicitacaoCorrecaoPonto,
   PontoEvento,
+  SolicitacaoColaboradorRH,
+  TipoSolicitacaoColaboradorRH,
 } from '../types';
 import { getSupabase } from '../lib/supabase';
 import {
@@ -47,6 +49,9 @@ import {
   fetchDocumentoSolicitacoes,
   fetchColaboradorDocumentos,
   fetchDocumentoHistorico,
+  fetchSolicitacoesColaboradorRH,
+  criarSolicitacaoColaboradorRH,
+  responderSolicitacaoColaboradorRH as responderSolicitacaoRHService,
 } from '../services/documentWorkflowService';
 import {
   fetchHoleriteLotes,
@@ -227,7 +232,8 @@ interface AppContextType {
   ) => Promise<void>;
   alertarPostoSemCoordenadas: (postosSemCoords: CondominioPosto[]) => Promise<void>;
 
-  // Coberturas e Notificações
+  // Coberturas, Substituição e Notificações
+  retornarColaboradorDeSubstituicao: (colaboradorId: string, coberturaId?: string) => Promise<boolean>;
   criarCobertura: (input: Omit<CriarCoberturaInput, 'empresaId' | 'criadoPorNome'>) => Promise<{ success: boolean; message: string }>;
   responderCobertura: (cobertura: CoberturaProgramada, aceitar: boolean, motivoRecusa?: string) => Promise<{ success: boolean; message: string }>;
   alterarStatusCobertura: (cobertura: CoberturaProgramada, novoStatus: 'cancelada' | 'concluida' | 'aprovada', detalhes?: string) => Promise<{ success: boolean; message: string }>;
@@ -240,6 +246,19 @@ interface AppContextType {
     justificativa: string;
   }) => Promise<{ success: boolean; message: string }>;
   revisarSolicitacaoCorrecao: (id: string, status: 'aprovado' | 'rejeitado', respostaRH: string) => Promise<boolean>;
+  solicitacoesColaboradorRH: SolicitacaoColaboradorRH[];
+  enviarSolicitacaoColaboradorRH: (dados: {
+    colaboradorId: string;
+    colaboradorNome: string;
+    tipo: TipoSolicitacaoColaboradorRH;
+    assunto: string;
+    descricao: string;
+  }) => Promise<{ success: boolean; solicitacao?: SolicitacaoColaboradorRH; message: string }>;
+  responderSolicitacaoColaboradorRH: (
+    solicitacaoId: string,
+    status: 'em_analise' | 'aguardando_colaborador' | 'concluida' | 'recusada',
+    respostaRh: string
+  ) => Promise<{ success: boolean; message: string }>;
 
   // Feedback toast
   toastMessage: string | null;
@@ -249,6 +268,10 @@ interface AppContextType {
   syncWithSupabase: () => Promise<void>;
   isSyncing: boolean;
   authLoading: boolean;
+  authBlockedReason: string | null;
+  blockedAuthEmail: string | null;
+  syncError: string | null;
+  hasTruncatedSync: boolean;
 
   // Sessão e Autenticação
   currentUser: UsuarioAuth | null;
@@ -323,6 +346,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [holeriteEventos, setHoleriteEventos] = useState<HoleriteEvento[]>([]);
   const [notificacoesSistema, setNotificacoesSistema] = useState<NotificacaoSistema[]>([]);
   const [solicitacoesCorrecao, setSolicitacoesCorrecao] = useState<SolicitacaoCorrecaoPonto[]>([]);
+  const [solicitacoesColaboradorRH, setSolicitacoesColaboradorRH] = useState<SolicitacaoColaboradorRH[]>([]);
 
   const [solicitacoesBiometria, setSolicitacoesBiometria] = useState<SolicitacaoBiometriaFacial[]>(() => {
     try {
@@ -367,10 +391,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [hasTruncatedSync, setHasTruncatedSync] = useState(false);
 
-  // Authenticated user - Fonte única: Supabase Auth (Zero-Trust)
+  // Authenticated user - Fonte única: Supabase Auth + Profiles/Colaboradores (Zero-Trust, sem fallback silencioso)
   const [currentUser, setCurrentUser] = useState<UsuarioAuth | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [authBlockedReason, setAuthBlockedReason] = useState<string | null>(null);
+  const [blockedAuthEmail, setBlockedAuthEmail] = useState<string | null>(null);
+  const [tenantEmpresaId, setTenantEmpresaId] = useState<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -383,36 +412,81 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const supabase = getSupabase();
     if (!user || !supabase) {
       setCurrentUser(null);
+      setTenantEmpresaId(null);
+      setAuthBlockedReason(null);
+      setBlockedAuthEmail(null);
       setAuthLoading(false);
       return;
     }
 
     try {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .or(`auth_user_id.eq.${user.id},id.eq.${user.id}`)
-        .maybeSingle();
+      const [{ data: profile, error: profErr }, { data: colabByAuth, error: colabErr }] = await Promise.all([
+        supabase
+          .from('profiles')
+          .select('*')
+          .or(`auth_user_id.eq.${user.id},id.eq.${user.id}`)
+          .maybeSingle(),
+        supabase
+          .from('colaboradores')
+          .select('*')
+          .eq('auth_user_id', user.id)
+          .maybeSingle(),
+      ]);
 
-      const { data: colabByAuth } = await supabase
-        .from('colaboradores')
-        .select('*')
-        .eq('auth_user_id', user.id)
-        .maybeSingle();
+      if (profErr || colabErr) {
+        setCurrentUser(null);
+        setTenantEmpresaId(null);
+        setBlockedAuthEmail(user.email || null);
+        setAuthBlockedReason(
+          `Erro ao validar perfil e vínculo de empresa no Supabase: ${profErr?.message || colabErr?.message}`
+        );
+        return;
+      }
 
       const colabId = profile?.colaborador_id || colabByAuth?.id || undefined;
       let colabData = colabByAuth;
 
       if (!colabData && profile?.colaborador_id) {
-        const { data: cRow } = await supabase
+        const { data: cRow, error: cRowErr } = await supabase
           .from('colaboradores')
           .select('*')
           .eq('id', profile.colaborador_id)
           .maybeSingle();
+        if (cRowErr) {
+          setCurrentUser(null);
+          setTenantEmpresaId(null);
+          setBlockedAuthEmail(user.email || null);
+          setAuthBlockedReason(`Erro ao carregar vínculo de colaborador: ${cRowErr.message}`);
+          return;
+        }
         colabData = cRow;
       }
 
-      const role = (profile?.role || colabData?.role || user.app_metadata?.role || 'funcionario') as UsuarioAuth['role'];
+      const validRoles = ['admin', 'supervisor', 'rh', 'funcionario'];
+      const resolvedRole = profile?.role || colabData?.role || user.app_metadata?.role;
+      const resolvedEmpresaId = profile?.empresa_id || colabData?.empresa_id || null;
+
+      if (!resolvedRole || !validRoles.includes(resolvedRole) || !resolvedEmpresaId) {
+        setCurrentUser(null);
+        setTenantEmpresaId(null);
+        setBlockedAuthEmail(user.email || null);
+        setAuthBlockedReason(
+          'Sua conta está autenticada, mas não possui perfil ativo ou vínculo de empresa válido na tabela profiles/colaboradores. Solicite regularização ao RH ou Administrador.'
+        );
+        return;
+      }
+
+      const role = resolvedRole as UsuarioAuth['role'];
+      if (role === 'funcionario' && !colabId) {
+        setCurrentUser(null);
+        setTenantEmpresaId(null);
+        setBlockedAuthEmail(user.email || null);
+        setAuthBlockedReason(
+          'Vínculo individual de colaborador não localizado para esta conta. Solicite ao RH a associação do seu usuário ao cadastro funcional.'
+        );
+        return;
+      }
+
       const nome = colabData?.nome || profile?.full_name || profile?.nome || user.user_metadata?.full_name || user.email?.split('@')[0] || 'Usuário';
       const cargo =
         colabData?.funcao ||
@@ -436,6 +510,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         postoNome: colabData?.posto_nome || profile?.posto_nome,
       };
 
+      setAuthBlockedReason(null);
+      setBlockedAuthEmail(null);
+      setTenantEmpresaId(resolvedEmpresaId);
       setCurrentUser(authUser);
       if (role === 'rh') {
         setActiveTab('rh');
@@ -443,6 +520,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch (err) {
       console.warn('Erro ao carregar perfil autenticado do Supabase:', err);
       setCurrentUser(null);
+      setTenantEmpresaId(null);
+      setBlockedAuthEmail(user.email || null);
+      setAuthBlockedReason('Falha inesperada ao validar sessão autenticada. Tente entrar novamente.');
     } finally {
       setAuthLoading(false);
     }
@@ -502,12 +582,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     setIsSyncing(true);
+    setSyncError(null);
+    setHasTruncatedSync(false);
+    const syncErrors: string[] = [];
+    let truncated = false;
+
     try {
       // Reenvia pontos offline pendentes com idempotência
       await syncPendingPontoEventos();
 
       // 1. Condomínios / Postos
-      const { data: remoteCondos } = await client.from('condominios').select('*').order('nome');
+      const { data: remoteCondos, error: condErr } = await client.from('condominios').select('*').order('nome');
+      if (condErr) syncErrors.push(`condominios: ${condErr.message}`);
       const condoMap = new Map<string, string>();
       if (Array.isArray(remoteCondos)) {
         const mappedCondos: CondominioPosto[] = remoteCondos.map((rc: any) => {
@@ -548,7 +634,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
 
       // 2. Colaboradores (sem expor senha)
-      const { data: remoteColabs } = await client.from('colaboradores').select('*').order('nome');
+      const { data: remoteColabs, error: colabErr } = await client.from('colaboradores').select('*').order('nome');
+      if (colabErr) syncErrors.push(`colaboradores: ${colabErr.message}`);
       if (Array.isArray(remoteColabs)) {
         setColaboradores(
           remoteColabs.map((rc: any) => ({
@@ -559,6 +646,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             condominioId: rc.condominio_id || null,
             postoNome: (rc.condominio_id && condoMap.get(rc.condominio_id)) || rc.posto_nome || 'Matriz - Reserva Central',
             status: (rc.status as Colaborador['status']) || 'no_posto',
+            motivoStatus: rc.motivo_status || undefined,
             jornada: rc.jornada || (rc.tipo_jornada ? `${rc.tipo_jornada} (${rc.turno_inicio || '07:00'} - ${rc.turno_fim || '19:00'})` : '12x36 (07:00 - 19:00)'),
             tipoEscala: (rc.tipo_jornada as Colaborador['tipoEscala']) || '12x36',
             turno: rc.turno_inicio && parseInt(String(rc.turno_inicio), 10) >= 18 ? 'noturno' : 'diurno',
@@ -591,19 +679,33 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             email: rc.email || undefined,
             role: (rc.role as Colaborador['role']) || 'funcionario',
             primeiroAcessoConcluido: Boolean(rc.primeiro_acesso_concluido),
+            afastamentoInicio: rc.afastamento_inicio ? String(rc.afastamento_inicio).slice(0, 10) : undefined,
+            afastamentoFim: rc.afastamento_fim ? String(rc.afastamento_fim).slice(0, 10) : undefined,
+            substituicaoAtivaId: rc.substituicao_ativa_id || undefined,
           }))
         );
       }
 
-      // 3. Empresa Matriz & Configurações
-      const [{ data: remoteEmpresaInfo }, { data: remoteEmpresa }] = await Promise.all([
-        client.from('empresa_info').select('*').limit(1).maybeSingle(),
-        client.from('empresas').select('*').limit(1).maybeSingle(),
+      // 3. Empresa Matriz & Configurações (filtrada por tenantEmpresaId quando disponível)
+      const empIdFilter = tenantEmpresaId || (empresaInfo.id && empresaInfo.id !== 'emp-matriz-principal' ? empresaInfo.id : null);
+      const [
+        { data: remoteEmpresaInfo, error: empInfoErr },
+        { data: remoteEmpresa, error: empErr },
+      ] = await Promise.all([
+        empIdFilter
+          ? client.from('empresa_info').select('*').eq('empresa_id', empIdFilter).limit(1).maybeSingle()
+          : client.from('empresa_info').select('*').limit(1).maybeSingle(),
+        empIdFilter
+          ? client.from('empresas').select('*').eq('id', empIdFilter).limit(1).maybeSingle()
+          : client.from('empresas').select('*').limit(1).maybeSingle(),
       ]);
+      if (empInfoErr) syncErrors.push(`empresa_info: ${empInfoErr.message}`);
+      if (empErr) syncErrors.push(`empresas: ${empErr.message}`);
+
       if (remoteEmpresaInfo || remoteEmpresa) {
         setEmpresaInfo((prev) => ({
           ...prev,
-          id: remoteEmpresa?.id || remoteEmpresaInfo?.empresa_id || prev.id || 'emp-matriz-principal',
+          id: remoteEmpresa?.id || remoteEmpresaInfo?.empresa_id || tenantEmpresaId || prev.id || 'emp-matriz-principal',
           razaoSocial: remoteEmpresaInfo?.razao_social || remoteEmpresa?.razao_social || prev.razaoSocial,
           nomeFantasia: remoteEmpresaInfo?.nome_fantasia || remoteEmpresa?.nome_fantasia || prev.nomeFantasia,
           cnpj: remoteEmpresaInfo?.cnpj || remoteEmpresa?.cnpj || prev.cnpj,
@@ -629,14 +731,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       // 4. Pontos, Ponto Eventos, Ocorrências, Alertas, Atestados
       const [
-        { data: remotePontos },
-        { data: remotePontoEventos },
-        { data: remoteOcorrs },
-        { data: remoteAlertas },
-        { data: remoteHolerites },
-        { data: remoteAtestados },
-        { data: remoteNotifs },
-        { data: remoteCorrecoes },
+        { data: remotePontos, error: pontosErr },
+        { data: remotePontoEventos, error: peErr },
+        { data: remoteOcorrs, error: ocorrErr },
+        { data: remoteAlertas, error: alertasErr },
+        { data: remoteHolerites, error: holErr },
+        { data: remoteAtestados, error: atestErr },
+        { data: remoteNotifs, error: notifErr },
+        { data: remoteCorrecoes, error: corrErr },
       ] = await Promise.all([
         client.from('pontos').select('*').order('created_at', { ascending: false }).limit(200),
         client.from('ponto_eventos').select('*').order('server_timestamp', { ascending: false }).limit(200),
@@ -647,6 +749,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         client.from('notificacoes_sistema').select('*').order('created_at', { ascending: false }).limit(150),
         client.from('solicitacoes_correcao_ponto').select('*').order('created_at', { ascending: false }).limit(150),
       ]);
+
+      if (pontosErr) syncErrors.push(`pontos: ${pontosErr.message}`);
+      if (peErr) syncErrors.push(`ponto_eventos: ${peErr.message}`);
+      if (ocorrErr) syncErrors.push(`ocorrencias: ${ocorrErr.message}`);
+      if (alertasErr) syncErrors.push(`alertas: ${alertasErr.message}`);
+      if (holErr) syncErrors.push(`holerites: ${holErr.message}`);
+      if (atestErr) syncErrors.push(`atestados: ${atestErr.message}`);
+      if (notifErr) syncErrors.push(`notificacoes: ${notifErr.message}`);
+      if (corrErr) syncErrors.push(`correcoes: ${corrErr.message}`);
+
+      if (
+        (remotePontos && remotePontos.length >= 200) ||
+        (remotePontoEventos && remotePontoEventos.length >= 200) ||
+        (remoteOcorrs && remoteOcorrs.length >= 200) ||
+        (remoteAlertas && remoteAlertas.length >= 200) ||
+        (remoteNotifs && remoteNotifs.length >= 150) ||
+        (remoteCorrecoes && remoteCorrecoes.length >= 150)
+      ) {
+        truncated = true;
+      }
 
       if (Array.isArray(remotePontos)) {
         setPontos(
@@ -690,6 +812,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             fotoBiometriaUrl: pe.foto_biometria_url || undefined,
             metodoAutenticacao: pe.metodo_autenticacao || 'biometria_facial',
             verificationStatus: pe.verification_status || 'confirmado',
+            revisaoPendente: Boolean(pe.revisao_pendente),
             classificacaoPosto: pe.classificacao_posto || 'posto_regular',
             postoBaseId: pe.posto_base_id || undefined,
             postoDetectadoId: pe.posto_detectado_id || undefined,
@@ -800,13 +923,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         );
       }
 
-      // 5. Fluxos de Coberturas, Documentos e Lotes de Holerites
+      // 5. Fluxos de Coberturas, Documentos, Pedidos RH e Lotes de Holerites
       const colabFilter = currentUser.role === 'funcionario' ? currentUser.colaboradorId : undefined;
-      const [covs, docReqs, docs, docHist, lotes, holEvs] = await Promise.all([
+      const [covs, docReqs, docs, docHist, solRH, lotes, holEvs] = await Promise.all([
         fetchCoberturas(colabFilter),
         fetchDocumentoSolicitacoes(colabFilter),
         fetchColaboradorDocumentos(colabFilter),
         fetchDocumentoHistorico(colabFilter),
+        fetchSolicitacoesColaboradorRH(colabFilter),
         currentUser.role !== 'funcionario' ? fetchHoleriteLotes() : Promise.resolve([]),
         currentUser.role !== 'funcionario' ? fetchHoleriteEventos() : Promise.resolve([]),
       ]);
@@ -815,16 +939,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setDocumentoSolicitacoes(docReqs);
       setColaboradorDocumentos(docs);
       setDocumentoHistorico(docHist);
+      setSolicitacoesColaboradorRH(solRH);
       if (currentUser.role !== 'funcionario') {
         setHoleriteLotes(lotes);
         setHoleriteEventos(holEvs);
       }
+
+      setHasTruncatedSync(truncated);
+      if (syncErrors.length > 0) {
+        setSyncError(`Falha parcial na sincronização (${syncErrors.join('; ')})`);
+      }
     } catch (err) {
       console.warn('Sync com Supabase finalizado com avisos:', err);
+      setSyncError(err instanceof Error ? err.message : 'Falha na sincronização com o Supabase.');
     } finally {
       setIsSyncing(false);
     }
-  }, [currentUser]);
+  }, [currentUser, tenantEmpresaId, empresaInfo.id]);
 
   useEffect(() => {
     if (currentUser) {
@@ -1018,6 +1149,52 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return true;
   };
 
+  // 2b. Concluir afastamento / retornar colaborador titular ao posto base
+  const retornarColaboradorDeSubstituicao = async (
+    colaboradorId: string,
+    coberturaId?: string
+  ): Promise<boolean> => {
+    const colab = colaboradores.find((c) => c.id === colaboradorId);
+    if (!colab) return false;
+
+    const client = getSupabase();
+    if (client) {
+      const { error } = await client.rpc('retornar_colaborador_substituicao', {
+        p_colaborador_id: colaboradorId,
+        p_cobertura_id: coberturaId || colab.substituicaoAtivaId || null,
+      });
+      if (error) {
+        showToast(`Falha ao concluir substituição: ${error.message}`);
+        return false;
+      }
+      await syncWithSupabase();
+    } else {
+      const targetCovId = coberturaId || colab.substituicaoAtivaId;
+      setColaboradores((prev) =>
+        prev.map((c) =>
+          c.id === colaboradorId
+            ? {
+                ...c,
+                status: 'no_posto',
+                afastamentoInicio: undefined,
+                afastamentoFim: undefined,
+                substituicaoAtivaId: undefined,
+                motivoStatus: undefined,
+              }
+            : c
+        )
+      );
+      if (targetCovId) {
+        setCoberturasProgramadas((prev) =>
+          prev.map((cov) => (cov.id === targetCovId ? { ...cov, status: 'concluida' } : cov))
+        );
+      }
+    }
+
+    showToast(`${colab.nome} retornado ao posto habitual e substituição concluída.`);
+    return true;
+  };
+
   // 3. Alocar Colaborador em Posto (Ação Administrativa Explícita)
   const alocarColaborador = async (postoId: string, colaboradorId: string, jornada: string): Promise<boolean> => {
     const posto = condominios.find((c) => c.id === postoId);
@@ -1144,7 +1321,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setHolerites((prev) =>
       prev.map((h) =>
         h.id === holeriteId
-          ? { ...h, statusEnvio: 'Assinado', cienciaConfirmadaEm: new Date().toISOString() }
+          ? { ...h, statusEnvio: 'Recebimento confirmado', cienciaConfirmadaEm: new Date().toISOString() }
           : h
       )
     );
@@ -1625,7 +1802,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const client = getSupabase();
     if (client) {
-      await client.from('alertas').insert({
+      // Trigger server-side trg_notify_alerta_operacional gera notificacoes_sistema automaticamente
+      const { error } = await client.from('alertas').insert({
         id: novoAlerta.id,
         empresa_id: empresaInfo.id || 'emp-matriz-principal',
         tipo: novoAlerta.tipo,
@@ -1639,16 +1817,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         horario: agoraHora,
         resolvido: false,
       });
-
-      await client.from('notificacoes_sistema').insert({
-        empresa_id: empresaInfo.id || 'emp-matriz-principal',
-        destinatario_role: 'supervisor',
-        categoria: 'ponto',
-        titulo: novoAlerta.titulo,
-        mensagem: novoAlerta.descricao,
-        referencia_tipo: 'alerta',
-        referencia_id: novoAlerta.id,
-      });
+      if (error) {
+        console.warn('Falha ao gravar alerta de tentativa fora do posto:', error.message);
+      }
     }
   };
 
@@ -1716,7 +1887,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setAlertas((prev) => [novoAlerta, ...prev]);
 
       if (client) {
-        await client.from('alertas').insert({
+        // Trigger server-side trg_notify_alerta_operacional gera notificacoes_sistema automaticamente
+        const { error } = await client.from('alertas').insert({
           id: alertaId,
           empresa_id: empresaInfo.id || 'emp-matriz-principal',
           tipo: 'posto_sem_coordenadas',
@@ -1728,15 +1900,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           horario: agoraHora,
           resolvido: false,
         });
-        await client.from('notificacoes_sistema').insert({
-          empresa_id: empresaInfo.id || 'emp-matriz-principal',
-          destinatario_role: 'supervisor',
-          categoria: 'alerta_config',
-          titulo: novoAlerta.titulo,
-          mensagem: novoAlerta.descricao,
-          referencia_tipo: 'condominio',
-          referencia_id: p.id,
-        });
+        if (error) {
+          console.warn('Falha ao gravar alerta de posto sem coordenadas:', error.message);
+        }
       }
     }
   };
@@ -1818,10 +1984,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
     const client = getSupabase();
     if (client) {
-      await client
-        .from('notificacoes_sistema')
-        .update({ lida: true, lida_em: nowIso })
-        .eq('id', notificacaoId);
+      const { error } = await client.rpc('marcar_notificacao_lida', { p_notificacao_id: notificacaoId });
+      if (error) {
+        console.warn('Falha ao marcar notificação como lida:', error.message);
+      }
     }
   };
 
@@ -1845,6 +2011,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const client = getSupabase();
     if (client) {
+      // Trigger server-side trg_notify_solicitacao_correcao_ponto notifica o RH automaticamente
       const { error } = await client.from('solicitacoes_correcao_ponto').insert({
         id: nova.id,
         empresa_id: empresaInfo.id || 'emp-matriz-principal',
@@ -1858,17 +2025,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (error) {
         return { success: false, message: `Erro ao registrar solicitação: ${error.message}` };
       }
-
-      await client.from('notificacoes_sistema').insert({
-        empresa_id: empresaInfo.id || 'emp-matriz-principal',
-        destinatario_role: 'rh',
-        categoria: 'ponto',
-        titulo: `Solicitação de correção de ponto: ${nova.colaboradorNome}`,
-        mensagem: `Data ${nova.dataPonto} (${nova.tipoCorrecao}): ${nova.justificativa}`,
-        referencia_tipo: 'solicitacao_correcao',
-        referencia_id: nova.id,
-        link_destino: 'rh',
-      });
     }
 
     setSolicitacoesCorrecao((prev) => [nova, ...prev]);
@@ -1892,6 +2048,53 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
     showToast(`Solicitação marcada como ${status}.`);
     return true;
+  };
+
+  const enviarSolicitacaoColaboradorRH = async (dados: {
+    colaboradorId: string;
+    colaboradorNome: string;
+    tipo: TipoSolicitacaoColaboradorRH;
+    assunto: string;
+    descricao: string;
+  }): Promise<{ success: boolean; solicitacao?: SolicitacaoColaboradorRH; message: string }> => {
+    const res = await criarSolicitacaoColaboradorRH({
+      empresaId: empresaInfo.id || 'emp-matriz-principal',
+      colaboradorId: dados.colaboradorId,
+      colaboradorNome: dados.colaboradorNome,
+      tipo: dados.tipo,
+      assunto: dados.assunto,
+      descricao: dados.descricao,
+    });
+    if (res.success && res.solicitacao) {
+      setSolicitacoesColaboradorRH((prev) => [res.solicitacao!, ...prev]);
+    }
+    showToast(res.message);
+    return res;
+  };
+
+  const responderSolicitacaoColaboradorRH = async (
+    solicitacaoId: string,
+    status: 'em_analise' | 'aguardando_colaborador' | 'concluida' | 'recusada',
+    respostaRh: string
+  ): Promise<{ success: boolean; message: string }> => {
+    const res = await responderSolicitacaoRHService({ solicitacaoId, status, respostaRh });
+    if (res.success) {
+      setSolicitacoesColaboradorRH((prev) =>
+        prev.map((s) =>
+          s.id === solicitacaoId
+            ? {
+                ...s,
+                status,
+                respostaRh,
+                responsavelRhNome: actorName,
+                respondidaEm: new Date().toISOString(),
+              }
+            : s
+        )
+      );
+    }
+    showToast(res.message);
+    return res;
   };
 
   // ============================================================================
@@ -1950,6 +2153,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       await supabase.auth.signOut();
     }
     setCurrentUser(null);
+    setTenantEmpresaId(null);
+    setAuthBlockedReason(null);
+    setBlockedAuthEmail(null);
+    setSyncError(null);
+    setHasTruncatedSync(false);
     setCondominios([]);
     setColaboradores([]);
     setAlertas([]);
@@ -1960,6 +2168,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCoberturasProgramadas([]);
     setDocumentoSolicitacoes([]);
     setColaboradorDocumentos([]);
+    setSolicitacoesColaboradorRH([]);
     setNotificacoesSistema([]);
     showToast('Sessão encerrada com segurança.');
   };
@@ -2278,17 +2487,25 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         notificarTentativaForaPosto,
         notificarPontoOutroPostoCobertura,
         alertarPostoSemCoordenadas,
+        retornarColaboradorDeSubstituicao,
         criarCobertura,
         responderCobertura,
         alterarStatusCobertura,
         marcarNotificacaoLida,
         registrarSolicitacaoCorrecao,
         revisarSolicitacaoCorrecao,
+        solicitacoesColaboradorRH,
+        enviarSolicitacaoColaboradorRH,
+        responderSolicitacaoColaboradorRH,
         toastMessage,
         showToast,
         syncWithSupabase,
         isSyncing,
         authLoading,
+        authBlockedReason,
+        blockedAuthEmail,
+        syncError,
+        hasTruncatedSync,
         currentUser,
         setCurrentUser,
         login,

@@ -114,6 +114,12 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
   const [comprovante, setComprovante] = useState<PontoEvento | null>(null);
   const [isOfflineSaved, setIsOfflineSaved] = useState(false);
   const [geoResult, setGeoResult] = useState<LocationValidationResult | null>(null);
+  const previewClassif = useMemo(() => {
+    if (!geoResult || geoResult.geofenceStatus !== 'dentro_do_raio') return null;
+    const target = geoResult.detectedPosto || posto;
+    const minhas = coberturasProgramadas.filter((c) => c.colaboradorId === colaborador.id);
+    return resolvePunchClassification(colaborador.condominioId, target.id, minhas, new Date());
+  }, [geoResult, posto, coberturasProgramadas, colaborador.id, colaborador.condominioId]);
   const [coordsDisplay, setCoordsDisplay] = useState<{ lat: number; lng: number; acc: number } | null>(null);
   const [faceQuality, setFaceQuality] = useState<FaceQualityResult | null>(null);
   const [faceMatchResult, setFaceMatchResult] = useState<FaceMatchResult | null>(null);
@@ -468,26 +474,12 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
       coverageAssignmentId: classif.coverageAssignment?.id,
     };
 
-    const isOutroPosto = targetPosto.id !== posto.id;
-    const isProgramada =
+    const isOutroPostoLocal = targetPosto.id !== posto.id;
+    const isProgramadaLocal =
       classif.classificacao === 'cobertura_programada' ||
       classif.classificacao === 'extra_programada';
 
-    if (isOutroPosto) {
-      await notificarPontoOutroPostoCobertura(
-        colaborador,
-        posto,
-        targetPosto,
-        currentGeo.distanceM || 0,
-        {
-          latitude: currentCoords.latitude,
-          longitude: currentCoords.longitude,
-        },
-        isProgramada
-      );
-    }
-
-    // 3. Gravação Transacional Idempotente no Supabase
+    // 3. Gravação Transacional Idempotente no Supabase (classificação autoritativa no servidor)
     try {
       const result = await recordPontoEvento(
         colaborador,
@@ -496,8 +488,8 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
         enrichedGeo,
         undefined,
         'biometria_facial',
-        isOutroPosto
-          ? isProgramada
+        isOutroPostoLocal
+          ? isProgramadaLocal
             ? `${classif.classificacao === 'extra_programada' ? 'Extra' : 'Cobertura'} programada em ${targetPosto.nome} (Posto base: ${posto.nome})`
             : `Divergência de posto: registro em ${targetPosto.nome} (Posto base: ${posto.nome})`
           : undefined,
@@ -511,6 +503,27 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
         return;
       }
 
+      const classificacaoReal = result.evento.classificacaoPosto || classif.classificacao;
+      const isOutroPostoReal =
+        targetPosto.id !== posto.id || classificacaoReal !== 'posto_regular';
+      const isProgramadaReal =
+        classificacaoReal === 'cobertura_programada' ||
+        classificacaoReal === 'extra_programada';
+
+      if (isOutroPostoReal) {
+        await notificarPontoOutroPostoCobertura(
+          colaborador,
+          posto,
+          targetPosto,
+          currentGeo.distanceM || 0,
+          {
+            latitude: currentCoords.latitude,
+            longitude: currentCoords.longitude,
+          },
+          isProgramadaReal
+        );
+      }
+
       // 4. Conclusão e Transição de Sucesso
       setIsOfflineSaved(result.offlinePending);
       setComprovante(result.evento);
@@ -521,7 +534,7 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro no servidor';
       setReadingState('erro');
-      setErrorMessage(`Falha na gravação do ponto: ${msg}`);
+      setErrorMessage(`Registro bloqueado pelo servidor: ${msg}`);
     }
   };
 
@@ -892,8 +905,10 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
                   <div className="p-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-[10px] text-amber-200 mt-1">
                     <strong>
                       {comprovante.classificacaoPosto === 'divergencia_posto'
-                        ? 'Divergência de Posto:'
-                        : 'Cobertura/Extra Programada:'}
+                        ? 'Ponto registrado em outro posto — supervisor notificado:'
+                        : comprovante.classificacaoPosto === 'extra_programada'
+                        ? 'Extra programada:'
+                        : 'Cobertura programada:'}
                     </strong>{' '}
                     Posto habitual: {comprovante.postoOriginalNome || posto.nome} (mantido sem alteração).
                   </div>
@@ -985,7 +1000,10 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
                 <span
                   className={`text-[9px] font-bold px-2 py-0.5 rounded-full shrink-0 border ${
                     geoResult.geofenceStatus === 'dentro_do_raio'
-                      ? geoResult.isCoveragePunch
+                      ? previewClassif?.classificacao === 'extra_programada' ||
+                        previewClassif?.classificacao === 'cobertura_programada'
+                        ? 'bg-blue-500/20 text-blue-200 border-blue-400/40'
+                        : previewClassif?.classificacao === 'divergencia_posto' || geoResult.isCoveragePunch
                         ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                         : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
                       : geoResult.geofenceStatus === 'inconclusivo'
@@ -996,14 +1014,18 @@ export const RegistroPontoModal: React.FC<RegistroPontoModalProps> = ({
                   }`}
                 >
                   {geoResult.geofenceStatus === 'dentro_do_raio'
-                    ? geoResult.isCoveragePunch
-                      ? 'Outro Posto da Empresa'
-                      : 'No Posto'
+                    ? previewClassif?.classificacao === 'extra_programada'
+                      ? 'Extra programada'
+                      : previewClassif?.classificacao === 'cobertura_programada'
+                      ? 'Cobertura programada'
+                      : previewClassif?.classificacao === 'divergencia_posto' || geoResult.isCoveragePunch
+                      ? 'Outro posto — supervisor será notificado'
+                      : 'Dentro do seu posto'
                     : geoResult.geofenceStatus === 'inconclusivo'
-                    ? 'Leitura Inconclusiva'
+                    ? 'GPS inconclusivo — tente novamente'
                     : geoResult.geofenceStatus === 'gps_indisponivel'
                     ? 'Sem Sinal GPS'
-                    : 'Fora dos Postos'}
+                    : 'Fora de todos os postos — registro bloqueado'}
                 </span>
               )}
             </div>

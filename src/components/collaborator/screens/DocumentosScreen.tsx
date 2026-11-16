@@ -26,6 +26,8 @@ import {
   DocumentoSolicitacao,
   DocumentoHistorico,
   EmpresaInfo,
+  SolicitacaoColaboradorRH,
+  TipoSolicitacaoColaboradorRH,
 } from '../../../types';
 import { downloadHoleritePDF } from '../../../services/documentService';
 import {
@@ -33,17 +35,22 @@ import {
   getDocumentoSignedUrl,
 } from '../../../services/documentWorkflowService';
 import { useApp } from '../../../context/AppContext';
-import { getSupabase } from '../../../lib/supabase';
 
 interface DocumentosScreenProps {
   colaborador: Colaborador;
   holerites: HoleriteRegistro[];
   documentos: ColaboradorDocumento[];
   solicitacoes?: DocumentoSolicitacao[];
+  solicitacoesRH?: SolicitacaoColaboradorRH[];
   historico?: DocumentoHistorico[];
   empresa: EmpresaInfo;
   onOpenHoleriteDetalhe: (holerite: HoleriteRegistro) => void;
   onOpenFaleRH: () => void;
+  onEnviarSolicitacaoRH?: (dados: {
+    tipo: TipoSolicitacaoColaboradorRH;
+    assunto: string;
+    descricao: string;
+  }) => Promise<{ success: boolean; solicitacao?: SolicitacaoColaboradorRH; message: string }>;
 }
 
 export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
@@ -51,10 +58,12 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
   holerites,
   documentos,
   solicitacoes = [],
+  solicitacoesRH = [],
   historico = [],
   empresa,
   onOpenHoleriteDetalhe,
   onOpenFaleRH,
+  onEnviarSolicitacaoRH,
 }) => {
   const { setColaboradorDocumentos, setDocumentoSolicitacoes, showToast, syncWithSupabase } = useApp();
 
@@ -67,6 +76,8 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
   const [motivoSolicitacao, setMotivoSolicitacao] = useState('');
   const [enviandoSolicitacao, setEnviandoSolicitacao] = useState(false);
   const [solicitacaoSucesso, setSolicitacaoSucesso] = useState(false);
+  const [solicitacaoProtocolo, setSolicitacaoProtocolo] = useState<string | null>(null);
+  const [solicitacaoErro, setSolicitacaoErro] = useState<string | null>(null);
 
   // Upload de documento (avulso ou respondendo solicitação / reenvio)
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -96,7 +107,10 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
   );
 
   const pendentesCiencia = meusHolerites.filter(
-    (h) => !h.cienciaConfirmadaEm && h.statusEnvio !== 'Assinado'
+    (h) =>
+      !h.cienciaConfirmadaEm &&
+      h.statusEnvio !== 'Recebimento confirmado' &&
+      h.statusEnvio !== 'Assinado'
   ).length;
 
   const openUploadForSolicitacao = (sol: DocumentoSolicitacao) => {
@@ -195,23 +209,28 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
   const handleSolicitarDocumentoRH = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!motivoSolicitacao.trim()) return;
-    setEnviandoSolicitacao(true);
-
-    const client = getSupabase();
-    if (client) {
-      await client.from('notificacoes_sistema').insert({
-        empresa_id: empresa.id || 'emp-matriz-principal',
-        destinatario_role: 'rh',
-        categoria: 'documento',
-        titulo: `Pedido de documento: ${colaborador.nome} (${tipoDocSolicitado})`,
-        mensagem: motivoSolicitacao.trim(),
-        link_destino: 'rh',
-      });
+    setSolicitacaoErro(null);
+    if (!onEnviarSolicitacaoRH) {
+      setSolicitacaoErro('Serviço de solicitação ao RH indisponível no momento.');
+      return;
     }
-
-    setEnviandoSolicitacao(false);
-    setSolicitacaoSucesso(true);
-    setMotivoSolicitacao('');
+    setEnviandoSolicitacao(true);
+    try {
+      const res = await onEnviarSolicitacaoRH({
+        tipo: 'Solicitação de Documento',
+        assunto: `Pedido de documento: ${tipoDocSolicitado}`,
+        descricao: motivoSolicitacao.trim(),
+      });
+      if (!res.success || !res.solicitacao) {
+        setSolicitacaoErro(res.message || 'Não foi possível enviar a solicitação ao RH.');
+        return;
+      }
+      setSolicitacaoProtocolo(res.solicitacao.protocolo);
+      setSolicitacaoSucesso(true);
+      setMotivoSolicitacao('');
+    } finally {
+      setEnviandoSolicitacao(false);
+    }
   };
 
   return (
@@ -312,7 +331,11 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
             )}
 
             {meusHolerites.map((holerite) => {
-              const confirmado = Boolean(holerite.cienciaConfirmadaEm) || holerite.statusEnvio === 'Assinado';
+              const confirmado =
+                Boolean(holerite.cienciaConfirmadaEm) ||
+                holerite.statusEnvio === 'Recebimento confirmado' ||
+                holerite.statusEnvio === 'Assinado';
+              const isRetificada = holerite.statusPublicacao === 'retificado';
               return (
                 <div
                   key={holerite.id}
@@ -330,6 +353,7 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
                         </h4>
                         <span className="text-[11px] text-slate-400 block">
                           Emitido em {holerite.dataEmissao}
+                          {isRetificada ? ' · Versão Anterior (Retificada)' : ''}
                         </span>
                       </div>
                     </div>
@@ -409,6 +433,8 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
               <button
                 onClick={() => {
                   setSolicitacaoSucesso(false);
+                  setSolicitacaoErro(null);
+                  setSolicitacaoProtocolo(null);
                   setSolicitarDocModalOpen(true);
                 }}
                 className="text-xs text-blue-400 hover:text-blue-300 font-bold flex items-center gap-1 cursor-pointer"
@@ -618,6 +644,38 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
             </div>
           )}
 
+          {/* Meus Pedidos Abertos ao RH */}
+          {solicitacoesRH.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="text-[11px] font-bold text-blue-300 uppercase tracking-wider px-1">
+                Meus Pedidos e Chamados ao RH ({solicitacoesRH.length})
+              </h4>
+              {solicitacoesRH.map((sr) => (
+                <div
+                  key={sr.id}
+                  className="p-3 rounded-2xl bg-slate-900/75 border border-slate-800 space-y-1.5 text-xs"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-[10px] font-mono text-blue-400 block">{sr.protocolo}</span>
+                      <strong className="text-white block">{sr.assunto}</strong>
+                      <span className="text-[10px] text-slate-400 block">{sr.tipo}</span>
+                    </div>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-amber-300 uppercase shrink-0">
+                      {sr.status.replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-300">{sr.descricao}</p>
+                  {sr.respostaRh && (
+                    <div className="p-2 rounded-xl bg-blue-950/35 border border-blue-500/25 text-[11px] text-blue-200">
+                      <strong>Resposta RH ({sr.responsavelRhNome || 'RH'}):</strong> {sr.respostaRh}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Suporte com RH */}
           <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -759,9 +817,14 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
             {solicitacaoSucesso ? (
               <div className="text-center py-6 space-y-3">
                 <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
-                <h4 className="text-sm font-bold text-white">Pedido Registrado!</h4>
+                <h4 className="text-sm font-bold text-white">Pedido Registrado no RH!</h4>
+                {solicitacaoProtocolo && (
+                  <p className="text-xs font-mono text-blue-400 font-bold">
+                    Protocolo: {solicitacaoProtocolo}
+                  </p>
+                )}
                 <p className="text-xs text-slate-400">
-                  O setor de RH foi notificado e responderá pelo aplicativo.
+                  Acompanhe o andamento e resposta oficial na lista &quot;Meus Pedidos e Chamados ao RH&quot;.
                 </p>
                 <button
                   onClick={() => setSolicitarDocModalOpen(false)}
@@ -798,6 +861,12 @@ export const DocumentosScreen: React.FC<DocumentosScreenProps> = ({
                     className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-blue-500 resize-none"
                   />
                 </div>
+
+                {solicitacaoErro && (
+                  <div className="p-2.5 rounded-xl bg-red-950/40 border border-red-500/40 text-red-300 text-[11px]">
+                    {solicitacaoErro}
+                  </div>
+                )}
 
                 <div className="flex gap-2 pt-2">
                   <button

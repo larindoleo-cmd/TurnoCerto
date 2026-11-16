@@ -36,7 +36,7 @@ import {
 } from '../../services/holeriteWorkflowService';
 import { fetchCoberturaHistorico } from '../../services/escalaCoberturaService';
 
-type RHSubTab = 'holerites' | 'documentos' | 'coberturas' | 'pontos' | 'atestados';
+type RHSubTab = 'holerites' | 'documentos' | 'atendimento' | 'coberturas' | 'pontos' | 'atestados';
 
 export const HoleriteRHTab: React.FC = () => {
   const {
@@ -60,12 +60,17 @@ export const HoleriteRHTab: React.FC = () => {
     coberturasProgramadas,
     criarCobertura,
     alterarStatusCobertura,
+    retornarColaboradorDeSubstituicao,
     solicitacoesCorrecao,
     revisarSolicitacaoCorrecao,
+    solicitacoesColaboradorRH,
+    responderSolicitacaoColaboradorRH,
     openHoleriteDetalhe,
     aprovarAtestado,
     recusarAtestado,
     syncWithSupabase,
+    syncError,
+    hasTruncatedSync,
     showToast,
   } = useApp();
 
@@ -83,6 +88,7 @@ export const HoleriteRHTab: React.FC = () => {
   );
   const [modoEmissao, setModoEmissao] = useState<'rascunho' | 'agendar' | 'publicar_agora'>('rascunho');
   const [agendadoLocal, setAgendadoLocal] = useState('');
+  const [rubricasOficiaisConfirmadas, setRubricasOficiaisConfirmadas] = useState(false);
   const [selectedColabIds, setSelectedColabIds] = useState<string[]>([]);
   const [emitindoLote, setEmitindoLote] = useState(false);
 
@@ -130,6 +136,13 @@ export const HoleriteRHTab: React.FC = () => {
   const [correcaoRespId, setCorrecaoRespId] = useState<string | null>(null);
   const [correcaoObs, setCorrecaoObs] = useState('');
 
+  // Atendimento RH (Pedidos de Funcionários)
+  const [pedidoRhEditId, setPedidoRhEditId] = useState<string | null>(null);
+  const [pedidoRhStatus, setPedidoRhStatus] = useState<
+    'em_analise' | 'aguardando_colaborador' | 'concluida' | 'recusada'
+  >('concluida');
+  const [pedidoRhResposta, setPedidoRhResposta] = useState('');
+
   const atorNome = currentUser?.nome || 'RH TurnoCerto';
 
   const filteredHolerites = holerites.filter((h) => {
@@ -164,6 +177,7 @@ export const HoleriteRHTab: React.FC = () => {
         modo: modoEmissao,
         agendadoLocalSaoPaulo: modoEmissao === 'agendar' ? agendadoLocal : undefined,
         criadoPorNome: atorNome,
+        rubricasOficiaisConfirmadas,
       });
       showToast(res.message);
       if (res.lote) {
@@ -174,6 +188,7 @@ export const HoleriteRHTab: React.FC = () => {
       }
       if (res.success) {
         setShowLoteForm(false);
+        setRubricasOficiaisConfirmadas(false);
         await syncWithSupabase();
       }
     } finally {
@@ -350,6 +365,14 @@ export const HoleriteRHTab: React.FC = () => {
             Documentos RH ({colaboradorDocumentos.length})
           </button>
           <button
+            onClick={() => setActiveSubTab('atendimento')}
+            className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              activeSubTab === 'atendimento' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Atendimento RH ({solicitacoesColaboradorRH.filter((s) => s.status === 'aberta' || s.status === 'em_analise').length})
+          </button>
+          <button
             onClick={() => setActiveSubTab('coberturas')}
             className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
               activeSubTab === 'coberturas' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'
@@ -375,6 +398,16 @@ export const HoleriteRHTab: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {(syncError || hasTruncatedSync) && (
+        <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-amber-200 text-xs flex items-center justify-between gap-2">
+          <span>
+            {syncError
+              ? `Erro de sincronização RH: ${syncError}`
+              : 'Aviso: Parte dos dados atingiu o limite de leitura; recarregue ou filtre para garantir cobertura completa.'}
+          </span>
+        </div>
+      )}
 
       {/* SUB-TAB 1: HOLERITES & LOTES */}
       {activeSubTab === 'holerites' && (
@@ -448,8 +481,8 @@ export const HoleriteRHTab: React.FC = () => {
               </div>
 
               {modoEmissao === 'agendar' && (
-                <div>
-                  <label className="block text-[11px] text-amber-300 font-semibold mb-1">
+                <div className="space-y-1">
+                  <label className="block text-[11px] text-amber-300 font-semibold">
                     Data e Hora de Liberação (Fuso America/Sao_Paulo)
                   </label>
                   <input
@@ -459,6 +492,9 @@ export const HoleriteRHTab: React.FC = () => {
                     onChange={(e) => setAgendadoLocal(e.target.value)}
                     className="w-full sm:w-72 px-3 py-2 rounded-lg bg-slate-900 border border-amber-500/40 text-white font-mono text-xs"
                   />
+                  <p className="text-[10px] text-slate-400">
+                    Agendamentos são processados automaticamente no próximo ciclo do cron a cada 5 minutos.
+                  </p>
                 </div>
               )}
 
@@ -482,16 +518,46 @@ export const HoleriteRHTab: React.FC = () => {
                 </div>
               </div>
 
+              {modoEmissao !== 'rascunho' && (
+                <label className="flex items-start gap-2 p-2.5 rounded-xl bg-amber-950/30 border border-amber-500/35 text-[11px] text-amber-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={rubricasOficiaisConfirmadas}
+                    onChange={(e) => setRubricasOficiaisConfirmadas(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Confirmo que as verbas e rubricas oficiais da folha foram conferidas e validadas pela contabilidade/DP (prévia estimada não substitui fechamento contábil).
+                  </span>
+                </label>
+              )}
+
               <div className="flex justify-end gap-2">
                 <button
                   type="submit"
-                  disabled={emitindoLote || colaboradores.length === 0}
+                  disabled={
+                    emitindoLote ||
+                    colaboradores.length === 0 ||
+                    (modoEmissao !== 'rascunho' && !rubricasOficiaisConfirmadas)
+                  }
                   className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold cursor-pointer disabled:opacity-50"
                 >
                   {emitindoLote ? 'Gerando PDFs...' : 'Confirmar Emissão do Lote'}
                 </button>
               </div>
             </form>
+          )}
+
+          {holeriteLotes.some((l) => l.status === 'erro') && (
+            <div className="p-3 rounded-xl bg-red-950/40 border border-red-500/40 text-red-200 text-xs flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <strong className="block">Há lote(s) com falha na publicação agendada</strong>
+                <span className="text-[11px] text-red-300">
+                  Verifique o erro no lote abaixo e utilize &quot;Publicar Agora&quot; após corrigir a pendência.
+                </span>
+              </div>
+            </div>
           )}
 
           {/* Lotes Programados / Recentes */}
@@ -628,12 +694,18 @@ export const HoleriteRHTab: React.FC = () => {
 
                     <span
                       className={`text-[10px] font-semibold px-2 py-0.5 rounded shrink-0 ${
-                        hol.cienciaConfirmadaEm || hol.statusEnvio === 'Assinado'
+                        hol.cienciaConfirmadaEm ||
+                        hol.statusEnvio === 'Recebimento confirmado' ||
+                        hol.statusEnvio === 'Assinado'
                           ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                           : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                       }`}
                     >
-                      {hol.cienciaConfirmadaEm ? 'Ciência Confirmada' : hol.statusEnvio}
+                      {hol.cienciaConfirmadaEm ||
+                      hol.statusEnvio === 'Recebimento confirmado' ||
+                      hol.statusEnvio === 'Assinado'
+                        ? 'Recebimento confirmado'
+                        : hol.statusEnvio}
                     </span>
                   </div>
 
@@ -970,9 +1042,153 @@ export const HoleriteRHTab: React.FC = () => {
         </div>
       )}
 
-      {/* SUB-TAB 3: ESCALAS & COBERTURAS */}
+      {/* SUB-TAB 3: ATENDIMENTO RH (PEDIDOS DOS COLABORADORES) */}
+      {activeSubTab === 'atendimento' && (
+        <div className="space-y-3 text-xs">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-blue-300">
+            Atendimento RH · Solicitações de Colaboradores ({solicitacoesColaboradorRH.length})
+          </h3>
+          {solicitacoesColaboradorRH.length === 0 ? (
+            <div className="p-6 text-center glass-panel rounded-2xl text-slate-400">
+              Nenhuma solicitação de colaborador registrada até o momento.
+            </div>
+          ) : (
+            solicitacoesColaboradorRH.map((sr) => (
+              <div key={sr.id} className="glass-panel rounded-2xl p-3.5 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="text-[10px] font-mono text-blue-400 block">{sr.protocolo}</span>
+                    <strong className="text-white block">
+                      {sr.colaboradorNome} · {sr.assunto}
+                    </strong>
+                    <span className="text-[11px] text-slate-400 block">
+                      Categoria: {sr.tipo} ·{' '}
+                      {new Date(sr.createdAt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-amber-300 uppercase shrink-0">
+                    {sr.status.replace(/_/g, ' ')}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-200">{sr.descricao}</p>
+                {sr.respostaRh && (
+                  <p className="text-[11px] text-blue-300 bg-blue-950/30 border border-blue-500/25 rounded-lg p-2">
+                    <strong>Resposta ({sr.responsavelRhNome || 'RH'}):</strong> {sr.respostaRh}
+                  </p>
+                )}
+
+                {pedidoRhEditId === sr.id ? (
+                  <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <select
+                        value={pedidoRhStatus}
+                        onChange={(e) =>
+                          setPedidoRhStatus(
+                            e.target.value as 'em_analise' | 'aguardando_colaborador' | 'concluida' | 'recusada'
+                          )
+                        }
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs"
+                      >
+                        <option value="em_analise">Em Análise</option>
+                        <option value="aguardando_colaborador">Aguardando Colaborador</option>
+                        <option value="concluida">Concluída</option>
+                        <option value="recusada">Recusada</option>
+                      </select>
+                      <input
+                        type="text"
+                        value={pedidoRhResposta}
+                        onChange={(e) => setPedidoRhResposta(e.target.value)}
+                        placeholder="Digite a resposta oficial para o colaborador..."
+                        className="sm:col-span-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPedidoRhEditId(null)}
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 text-[11px] cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await responderSolicitacaoColaboradorRH(sr.id, pedidoRhStatus, pedidoRhResposta);
+                          setPedidoRhEditId(null);
+                          setPedidoRhResposta('');
+                        }}
+                        className="px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-[11px] cursor-pointer"
+                      >
+                        Salvar Resposta
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex justify-end pt-1 border-t border-slate-800/80">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPedidoRhEditId(sr.id);
+                        setPedidoRhResposta(sr.respostaRh || '');
+                        setPedidoRhStatus(
+                          sr.status === 'aberta'
+                            ? 'concluida'
+                            : (sr.status as 'em_analise' | 'aguardando_colaborador' | 'concluida' | 'recusada')
+                        );
+                      }}
+                      className="px-3 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600/35 text-blue-300 font-semibold text-[11px] cursor-pointer"
+                    >
+                      Responder / Atualizar Status
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* SUB-TAB 4: ESCALAS & COBERTURAS */}
       {activeSubTab === 'coberturas' && (
         <div className="space-y-4 text-xs">
+          {colaboradores.some(
+            (c) => Boolean(c.substituicaoAtivaId) || (c.status === 'falta' && (c.afastamentoInicio || c.afastamentoFim))
+          ) && (
+            <div className="glass-panel rounded-2xl p-3.5 border border-amber-500/35 space-y-2">
+              <h3 className="font-bold text-amber-300 flex items-center gap-1.5">
+                <RefreshCw className="w-4 h-4" />
+                <span>Afastamentos / Substituições Emergenciais em Curso</span>
+              </h3>
+              {colaboradores
+                .filter(
+                  (c) =>
+                    Boolean(c.substituicaoAtivaId) ||
+                    (c.status === 'falta' && (c.afastamentoInicio || c.afastamentoFim))
+                )
+                .map((c) => (
+                  <div
+                    key={c.id}
+                    className="p-2.5 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-wrap items-center justify-between gap-2"
+                  >
+                    <div>
+                      <strong className="text-white block">
+                        {c.nome} ({c.postoNome})
+                      </strong>
+                      <span className="text-[11px] text-slate-400">
+                        Período: {c.afastamentoInicio || '--'} a {c.afastamentoFim || '--'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void retornarColaboradorDeSubstituicao(c.id, c.substituicaoAtivaId)}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] cursor-pointer"
+                    >
+                      Concluir Afastamento / Retornar ao Posto
+                    </button>
+                  </div>
+                ))}
+            </div>
+          )}
           <form
             onSubmit={handleCriarCoberturaRH}
             className="glass-panel rounded-2xl p-4 border border-amber-500/30 space-y-3"

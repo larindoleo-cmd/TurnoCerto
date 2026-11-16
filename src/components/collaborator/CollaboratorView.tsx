@@ -46,6 +46,11 @@ export const CollaboratorView: React.FC = () => {
     responderCobertura,
     registrarSolicitacaoCorrecao,
     solicitacoesCorrecao,
+    solicitacoesColaboradorRH,
+    enviarSolicitacaoColaboradorRH,
+    syncError,
+    hasTruncatedSync,
+    syncWithSupabase,
     empresaInfo,
     showToast,
     setTrocarSenhaModalOpen,
@@ -335,6 +340,22 @@ export const CollaboratorView: React.FC = () => {
       />
 
       <main className="flex-1 max-w-md w-full mx-auto px-3.5 sm:px-4 pt-3 pb-28">
+        {(syncError || hasTruncatedSync) && (
+          <div className="mb-3 p-2.5 rounded-xl bg-amber-950/50 border border-amber-500/40 text-amber-200 text-[11px] flex items-center justify-between gap-2">
+            <span>
+              {syncError
+                ? `Erro ao sincronizar dados: ${syncError}`
+                : 'Aviso: Alguns registros atingiram o limite de carregamento.'}
+            </span>
+            <button
+              type="button"
+              onClick={() => void syncWithSupabase()}
+              className="px-2 py-1 rounded-lg bg-amber-500/20 text-amber-100 font-bold shrink-0 cursor-pointer"
+            >
+              Atualizar
+            </button>
+          </div>
+        )}
         {activeTab === 'meu_turno' && (
           <MeuTurnoScreen
             colaborador={linkedColaborador}
@@ -391,14 +412,24 @@ export const CollaboratorView: React.FC = () => {
           <DocumentosScreen
             colaborador={linkedColaborador}
             holerites={holerites.filter(
-              (h) => h.statusPublicacao === 'publicado' || !h.statusPublicacao
+              (h) => h.statusPublicacao === 'publicado' || h.statusPublicacao === 'retificado' || !h.statusPublicacao
             )}
             documentos={meusDocumentos}
             solicitacoes={minhasSolicitacoesDocs}
+            solicitacoesRH={solicitacoesColaboradorRH.filter(
+              (s) => s.colaboradorId === linkedColaborador.id
+            )}
             historico={meuHistoricoDocs}
             empresa={empresaInfo}
             onOpenHoleriteDetalhe={(h) => setSelectedHolerite(h)}
             onOpenFaleRH={() => setFaleRHOpen(true)}
+            onEnviarSolicitacaoRH={(dados) =>
+              enviarSolicitacaoColaboradorRH({
+                colaboradorId: linkedColaborador.id,
+                colaboradorNome: linkedColaborador.nome,
+                ...dados,
+              })
+            }
           />
         )}
 
@@ -479,6 +510,13 @@ export const CollaboratorView: React.FC = () => {
         empresa={empresaInfo}
         colaborador={linkedColaborador}
         onClose={() => setFaleRHOpen(false)}
+        onSubmitSolicitacao={(dados) =>
+          enviarSolicitacaoColaboradorRH({
+            colaboradorId: linkedColaborador.id,
+            colaboradorNome: linkedColaborador.nome,
+            ...dados,
+          })
+        }
       />
 
       <NotificacoesModal

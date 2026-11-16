@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Database, CheckCircle2, AlertCircle, RefreshCw, Copy, Check, Shield } from 'lucide-react';
+import { X, Database, CheckCircle2, AlertCircle, RefreshCw, Shield, AlertTriangle, Terminal } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getStoredSupabaseConfig, saveStoredSupabaseConfig, testSupabaseConnection } from '../lib/supabase';
 
@@ -11,7 +11,6 @@ export const SupabaseSettingsModal: React.FC = () => {
   const [anonKey, setAnonKey] = useState(stored.anonKey);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
-  const [copiedSql, setCopiedSql] = useState(false);
 
   useEffect(() => {
     if (supabaseModalOpen) {
@@ -46,249 +45,13 @@ export const SupabaseSettingsModal: React.FC = () => {
     }
   };
 
-  const sqlSchemaSnippet = `-- ================================================================================
--- TurnoCerto: Pacote Mestre de Estruturação e RLS (Executar no Supabase SQL Editor)
--- Cria: condominios, colaboradores, profiles, alertas, ocorrencias, holerites, pontos, atestados, empresa_info
--- ================================================================================
-
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
--- 1. CONDOMÍNIOS
-CREATE TABLE IF NOT EXISTS public.condominios (
-  id TEXT PRIMARY KEY DEFAULT ('cond-' || substr(md5(random()::text), 1, 8)),
-  nome TEXT NOT NULL,
-  tipo TEXT NOT NULL DEFAULT 'Residencial',
-  cnpj TEXT,
-  contrato_numero TEXT,
-  endereco TEXT NOT NULL DEFAULT 'Endereço não informado',
-  bairro TEXT,
-  cidade TEXT DEFAULT 'Não informada',
-  supervisor TEXT,
-  telefone_supervisor TEXT,
-  vagas_contratadas INTEGER NOT NULL DEFAULT 2,
-  status TEXT NOT NULL DEFAULT 'operacional',
-  motivo_atencao TEXT,
-  tipo_escala_padrao TEXT DEFAULT '12x36 (07:00 - 19:00)',
-  cobertura_percentual INTEGER DEFAULT 100,
-  contato_sindico TEXT,
-  telefone_sindico TEXT,
-  instrucoes_guarita TEXT,
-  foto_url TEXT,
-  lat DOUBLE PRECISION,
-  lng DOUBLE PRECISION,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 2. COLABORADORES
-CREATE TABLE IF NOT EXISTS public.colaboradores (
-  id TEXT PRIMARY KEY DEFAULT ('colab-' || extract(epoch from now())::bigint),
-  nome TEXT NOT NULL,
-  full_name TEXT,
-  cpf TEXT UNIQUE,
-  rg TEXT,
-  data_nascimento DATE,
-  telefone TEXT,
-  foto_url TEXT,
-  matricula TEXT,
-  pis TEXT,
-  ctps TEXT,
-  nome_mae TEXT,
-  cep TEXT,
-  logradouro TEXT,
-  numero TEXT,
-  complemento TEXT,
-  bairro TEXT,
-  cidade_uf TEXT,
-  endereco TEXT,
-  condominio_id TEXT,
-  cargo TEXT NOT NULL DEFAULT 'Porteiro',
-  funcao TEXT DEFAULT 'Porteiro',
-  tipo_jornada TEXT NOT NULL DEFAULT '12x36',
-  jornada TEXT DEFAULT '12x36 (07:00 - 19:00)',
-  turno_inicio TIME DEFAULT '07:00:00',
-  turno_fim TIME DEFAULT '19:00:00',
-  data_admissao DATE DEFAULT CURRENT_DATE,
-  salario_base NUMERIC(10, 2) NOT NULL DEFAULT 2150.00,
-  status TEXT NOT NULL DEFAULT 'no_posto',
-  banco_horas NUMERIC(6, 2) DEFAULT 0.0,
-  pix TEXT,
-  banco TEXT DEFAULT '341 - Itaú Unibanco S.A.',
-  agencia TEXT,
-  conta TEXT,
-  recebe_vt BOOLEAN NOT NULL DEFAULT TRUE,
-  recebe_vr BOOLEAN NOT NULL DEFAULT TRUE,
-  valor_vr NUMERIC(10, 2) NOT NULL DEFAULT 28.50,
-  recebe_va BOOLEAN NOT NULL DEFAULT TRUE,
-  valor_va NUMERIC(10, 2) NOT NULL DEFAULT 220.00,
-  valor_extra_ft NUMERIC(10, 2) NOT NULL DEFAULT 160.00,
-  valor_bonus NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-  email TEXT,
-  role TEXT DEFAULT 'funcionario',
-  primeiro_acesso_concluido BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 3. PROFILES (Espelho de Auth)
-CREATE TABLE IF NOT EXISTS public.profiles (
-  id TEXT PRIMARY KEY,
-  nome TEXT,
-  full_name TEXT,
-  cpf TEXT,
-  cargo TEXT DEFAULT 'Porteiro',
-  role TEXT DEFAULT 'funcionario',
-  condominio_id TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 4. OCORRÊNCIAS
-CREATE TABLE IF NOT EXISTS public.ocorrencias (
-  id TEXT PRIMARY KEY DEFAULT ('ocorr-' || extract(epoch from now())::bigint),
-  posto_id TEXT NOT NULL,
-  posto_nome TEXT,
-  tipo TEXT NOT NULL DEFAULT 'Posto Descoberto',
-  descricao TEXT NOT NULL,
-  registrado_por TEXT NOT NULL DEFAULT 'Sistema',
-  data_hora TEXT DEFAULT ('Hoje às ' || to_char(now(), 'HH24:MI')),
-  urgencia TEXT NOT NULL DEFAULT 'alta',
-  resolvida BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 5. ALERTAS OPERACIONAIS
-CREATE TABLE IF NOT EXISTS public.alertas (
-  id TEXT PRIMARY KEY DEFAULT ('alert-' || extract(epoch from now())::bigint),
-  tipo TEXT NOT NULL DEFAULT 'posto_descoberto',
-  gravidade TEXT NOT NULL DEFAULT 'critica',
-  titulo TEXT NOT NULL,
-  descricao TEXT NOT NULL,
-  posto_id TEXT NOT NULL,
-  posto_nome TEXT,
-  horario TEXT DEFAULT to_char(now(), 'HH24:MI'),
-  resolvido BOOLEAN NOT NULL DEFAULT FALSE,
-  resolvido_por TEXT,
-  resolvido_em TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 6. HOLERITES
-CREATE TABLE IF NOT EXISTS public.holerites (
-  id TEXT PRIMARY KEY DEFAULT ('hol-' || extract(epoch from now())::bigint),
-  colaborador_id TEXT NOT NULL,
-  colaborador_nome TEXT NOT NULL,
-  matricula TEXT,
-  funcao TEXT NOT NULL DEFAULT 'Porteiro',
-  mes_referencia TEXT NOT NULL,
-  salario_base NUMERIC(10, 2) NOT NULL DEFAULT 2150.00,
-  adicional_periculosidade NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-  adicional_noturno NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-  horas_extras_50 NUMERIC(6, 2) DEFAULT 0.00,
-  valor_horas_extras NUMERIC(10, 2) DEFAULT 0.00,
-  desconto_inss NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-  desconto_fgts NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-  desconto_vt NUMERIC(10, 2) DEFAULT 0.00,
-  desconto_vr NUMERIC(10, 2) DEFAULT 0.00,
-  bonus_assiduidade NUMERIC(10, 2) DEFAULT 0.00,
-  liquido_receber NUMERIC(10, 2) NOT NULL,
-  status_envio TEXT NOT NULL DEFAULT 'Pendente',
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 7. PONTOS ELETRÔNICOS
-CREATE TABLE IF NOT EXISTS public.pontos (
-  id TEXT PRIMARY KEY DEFAULT ('ponto-' || extract(epoch from now())::bigint),
-  colaborador_id TEXT NOT NULL,
-  colaborador_nome TEXT,
-  data DATE NOT NULL DEFAULT CURRENT_DATE,
-  entrada_1 TEXT DEFAULT '07:00',
-  saida_1 TEXT DEFAULT '12:00',
-  entrada_2 TEXT DEFAULT '13:00',
-  saida_2 TEXT DEFAULT '19:00',
-  total_horas TEXT DEFAULT '11h 00m',
-  status_ponto TEXT NOT NULL DEFAULT 'Regular',
-  status TEXT DEFAULT 'Regular',
-  localizacao_gps TEXT DEFAULT 'Dentro do Raio Geofence (12m)',
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 8. ATESTADOS MÉDICOS
-CREATE TABLE IF NOT EXISTS public.atestados (
-  id TEXT PRIMARY KEY DEFAULT ('atest-' || extract(epoch from now())::bigint),
-  colaborador_id TEXT NOT NULL,
-  colaborador_nome TEXT NOT NULL,
-  matricula TEXT,
-  posto_nome TEXT,
-  medico TEXT NOT NULL,
-  crm TEXT NOT NULL,
-  cid TEXT NOT NULL,
-  data_inicio DATE NOT NULL,
-  dias_afastamento INTEGER NOT NULL DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'Pendente',
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 9. EMPRESA MATRIZ
-CREATE TABLE IF NOT EXISTS public.empresa_info (
-  id TEXT PRIMARY KEY DEFAULT 'matriz-principal',
-  razao_social TEXT NOT NULL,
-  nome_fantasia TEXT NOT NULL,
-  cnpj TEXT NOT NULL,
-  telefone TEXT,
-  whatsapp TEXT,
-  email TEXT,
-  endereco TEXT,
-  bairro TEXT,
-  cidade TEXT,
-  estado TEXT,
-  cep TEXT,
-  responsavel_operacional TEXT,
-  cargo_responsavel TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 10. ROW LEVEL SECURITY (RLS) & PERMISSÕES
-ALTER TABLE public.condominios ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.colaboradores ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.ocorrencias ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.alertas ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.holerites ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.pontos ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.atestados ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.empresa_info ENABLE ROW LEVEL SECURITY;
-
--- 10. ROW LEVEL SECURITY (RLS) & ISOLAMENTO ZERO-TRUST
--- Execute a migração oficial: supabase/migrations/20261112100000_security_hardening_auth_rls.sql
-ALTER TABLE public.condominios ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.colaboradores ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.ocorrencias ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.alertas ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.holerites ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.pontos ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.atestados ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.empresa_info ENABLE ROW LEVEL SECURITY;
-
--- Revoga privilégios excessivos do papel anônimo
-REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;
-REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM anon;
-GRANT USAGE ON SCHEMA public TO anon, authenticated;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;`;
-
-  const copySql = () => {
-    navigator.clipboard.writeText(sqlSchemaSnippet);
-    setCopiedSql(true);
-    setTimeout(() => setCopiedSql(false), 2500);
-  };
+  const migrationSequence = [
+    'supabase/migrations/20261114100001_ponto_schema_geofence_serverside.sql',
+    'supabase/migrations/20261114100002_coberturas_conflitos_substituicao.sql',
+    'supabase/migrations/20261114100003_rls_security_hardening_v2.sql',
+    'supabase/migrations/20261114100004_storage_documentos_pedidos_rh.sql',
+    'supabase/migrations/20261114100005_holerites_ciencia_cron_hardening.sql',
+  ];
 
   return (
     <div
@@ -402,23 +165,24 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authentic
             </button>
           </div>
 
-          {/* Schema Snippet accordion */}
-          <div className="pt-2 border-t border-slate-800 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                SQL Schema para o Editor do Supabase
-              </span>
-              <button
-                onClick={copySql}
-                className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300"
-              >
-                {copiedSql ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                {copiedSql ? 'Copiado!' : 'Copiar SQL'}
-              </button>
+          {/* Instruções oficiais de migração versionada */}
+          <div className="pt-2 border-t border-slate-800 space-y-2.5">
+            <div className="flex items-center gap-1.5 text-slate-300 font-bold text-[11px] uppercase tracking-wider">
+              <Terminal className="w-3.5 h-3.5 text-blue-400" />
+              <span>Migrações Versionadas Oficiais (CLI Supabase)</span>
             </div>
-            <pre className="p-3 rounded-xl bg-slate-950 border border-slate-800/80 text-[10px] text-slate-300 font-mono overflow-x-auto max-h-36 no-scrollbar">
-              {sqlSchemaSnippet}
-            </pre>
+            <div className="p-3 rounded-xl bg-red-950/30 border border-red-500/40 text-red-200 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div className="text-[11px] leading-relaxed">
+                <strong className="block text-red-300">Aviso de Segurança Operacional</strong>
+                Nunca execute <code className="font-mono bg-red-950 px-1 rounded">supabase/04_SEGURANCA_E_RLS.sql</code> nem cole SQL genérico pela interface web do navegador. Aplique apenas as migrações versionadas via <code className="font-mono bg-slate-900 px-1 rounded">supabase db push</code> após backup.
+              </div>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800/80 text-[10px] text-slate-300 font-mono space-y-1">
+              {migrationSequence.map((m) => (
+                <div key={m} className="truncate text-emerald-300/90">• {m}</div>
+              ))}
+            </div>
           </div>
         </div>
 

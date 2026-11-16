@@ -9,38 +9,92 @@ import {
   Clock,
   ExternalLink,
 } from 'lucide-react';
-import { EmpresaInfo, Colaborador } from '../../../types';
+import {
+  EmpresaInfo,
+  Colaborador,
+  SolicitacaoColaboradorRH,
+  TipoSolicitacaoColaboradorRH,
+} from '../../../types';
 
 interface FaleComRHModalProps {
   isOpen: boolean;
   empresa: EmpresaInfo;
   colaborador: Colaborador;
   onClose: () => void;
+  onSubmitSolicitacao?: (dados: {
+    tipo: TipoSolicitacaoColaboradorRH;
+    assunto: string;
+    descricao: string;
+  }) => Promise<{ success: boolean; solicitacao?: SolicitacaoColaboradorRH; message: string }>;
 }
+
+const TIPOS_SOLICITACAO: TipoSolicitacaoColaboradorRH[] = [
+  'Dúvida sobre Holerite',
+  'Férias / Folga',
+  'Vale-Transporte / Benefícios',
+  'Solicitação de Documento',
+  'Atestado / Declaração',
+  'Outro',
+];
 
 export const FaleComRHModal: React.FC<FaleComRHModalProps> = ({
   isOpen,
   empresa,
   colaborador,
   onClose,
+  onSubmitSolicitacao,
 }) => {
-  const [assunto, setAssunto] = useState('Dúvida sobre Folha / Holerite');
+  const [tipo, setTipo] = useState<TipoSolicitacaoColaboradorRH>('Dúvida sobre Holerite');
+  const [assunto, setAssunto] = useState('Dúvida sobre Holerite / Pagamento');
   const [mensagem, setMensagem] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const [erroEnvio, setErroEnvio] = useState<string | null>(null);
   const [enviado, setEnviado] = useState(false);
   const [protocolo, setProtocolo] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const isSemVinculo = colaborador.id === 'pendente';
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!mensagem.trim()) return;
+    setErroEnvio(null);
 
-    const proto = `RH-${Date.now().toString().slice(-6)}`;
-    setProtocolo(proto);
-    setEnviado(true);
+    if (isSemVinculo || !onSubmitSolicitacao) {
+      setErroEnvio(
+        'Contas sem vínculo de colaborador ativo devem usar o WhatsApp ou telefone oficial do RH acima para regularizar o cadastro.'
+      );
+      return;
+    }
+
+    setEnviando(true);
+    try {
+      const res = await onSubmitSolicitacao({
+        tipo,
+        assunto: assunto.trim() || tipo,
+        descricao: mensagem.trim(),
+      });
+      if (!res.success || !res.solicitacao) {
+        setErroEnvio(res.message || 'Não foi possível registrar o pedido no RH.');
+        return;
+      }
+      setProtocolo(res.solicitacao.protocolo);
+      setEnviado(true);
+      setMensagem('');
+    } finally {
+      setEnviando(false);
+    }
   };
 
   const whatsappClean = (empresa.whatsapp || '11988421190').replace(/\D/g, '');
+
+  const handleClose = () => {
+    setEnviado(false);
+    setErroEnvio(null);
+    setProtocolo(null);
+    onClose();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
@@ -52,8 +106,8 @@ export const FaleComRHModal: React.FC<FaleComRHModalProps> = ({
             <h3 className="text-sm font-bold text-white">Fale com o RH / Suporte</h3>
           </div>
           <button
-            onClick={onClose}
-            className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white"
+            onClick={handleClose}
+            className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -64,20 +118,20 @@ export const FaleComRHModal: React.FC<FaleComRHModalProps> = ({
             <div className="w-14 h-14 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto border border-emerald-500/30">
               <CheckCircle2 className="w-8 h-8" />
             </div>
-            <h4 className="text-base font-bold text-white">Mensagem Enviada!</h4>
+            <h4 className="text-base font-bold text-white">Solicitação Registrada no RH!</h4>
             <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 font-mono text-xs text-left space-y-1">
               <div className="flex justify-between">
-                <span className="text-slate-400">Protocolo de Atendimento:</span>
+                <span className="text-slate-400">Protocolo Oficial:</span>
                 <strong className="text-blue-400">{protocolo}</strong>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Prazo de Resposta:</span>
-                <span className="text-emerald-400 font-bold">Até 24h úteis</span>
+                <span className="text-slate-400">Acompanhamento:</span>
+                <span className="text-emerald-400 font-bold">Aba Documentos</span>
               </div>
             </div>
             <button
-              onClick={onClose}
-              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs"
+              onClick={handleClose}
+              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs cursor-pointer"
             >
               Fechar
             </button>
@@ -120,19 +174,36 @@ export const FaleComRHModal: React.FC<FaleComRHModalProps> = ({
             <form onSubmit={handleSubmit} className="space-y-3 pt-1 border-t border-slate-800">
               <div>
                 <label className="block text-slate-300 font-semibold mb-1">
-                  Assunto da Solicitação
+                  Categoria da Solicitação
                 </label>
                 <select
+                  value={tipo}
+                  onChange={(e) => {
+                    const nextTipo = e.target.value as TipoSolicitacaoColaboradorRH;
+                    setTipo(nextTipo);
+                    setAssunto(nextTipo);
+                  }}
+                  className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-blue-500"
+                >
+                  {TIPOS_SOLICITACAO.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  Assunto Resumido
+                </label>
+                <input
+                  type="text"
+                  required
                   value={assunto}
                   onChange={(e) => setAssunto(e.target.value)}
                   className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-blue-500"
-                >
-                  <option value="Dúvida sobre Folha / Holerite">Dúvida sobre Holerite / Pagamento</option>
-                  <option value="Atestado Médico / Afastamento">Envio / Informação de Atestado Médico</option>
-                  <option value="Benefícios VT / VR">Dúvida sobre Vale Transporte ou Refeição</option>
-                  <option value="Atualização Cadastral">Alteração de Endereço ou Documentos</option>
-                  <option value="Outro">Outra Dúvida ou Solicitação</option>
-                </select>
+                />
               </div>
 
               <div>
@@ -144,25 +215,32 @@ export const FaleComRHModal: React.FC<FaleComRHModalProps> = ({
                   rows={3}
                   value={mensagem}
                   onChange={(e) => setMensagem(e.target.value)}
-                  placeholder="Escreva sua mensagem para o RH..."
+                  placeholder="Escreva sua solicitação detalhada para o RH..."
                   className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-blue-500 resize-none"
                 />
               </div>
 
+              {erroEnvio && (
+                <div className="p-2.5 rounded-xl bg-red-950/40 border border-red-500/40 text-red-300 text-[11px]">
+                  {erroEnvio}
+                </div>
+              )}
+
               <div className="flex gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={onClose}
+                  onClick={handleClose}
                   className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold hover:bg-slate-700 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-lg shadow-blue-600/30 flex items-center justify-center gap-1.5 cursor-pointer"
+                  disabled={enviando || isSemVinculo}
+                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-blue-600/30 flex items-center justify-center gap-1.5 cursor-pointer"
                 >
                   <Send className="w-3.5 h-3.5" />
-                  <span>Enviar Mensagem</span>
+                  <span>{enviando ? 'Registrando...' : 'Enviar Solicitação'}</span>
                 </button>
               </div>
             </form>

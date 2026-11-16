@@ -32,13 +32,49 @@ export interface CriarCoberturaInput {
   criadoPorNome?: string;
 }
 
-function toMinutes(hhmm: string): number {
+function addDaysIso(ymd: string, delta: number): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, (d || 1) + delta));
+  return dt.toISOString().slice(0, 10);
+}
+
+function normalizeTimeHhMm(hhmm: string): string {
   const [h, m] = (hhmm || '00:00').split(':').map(Number);
-  return (h || 0) * 60 + (m || 0);
+  const hh = String(Math.min(23, Math.max(0, h || 0))).padStart(2, '0');
+  const mm = String(Math.min(59, Math.max(0, m || 0))).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function expandShiftIntervalsMs(cov: {
+  dataInicio: string;
+  dataFim: string;
+  horaInicio: string;
+  horaFim: string;
+}): Array<[number, number]> {
+  const intervals: Array<[number, number]> = [];
+  if (!cov.dataInicio || !cov.dataFim || cov.dataFim < cov.dataInicio) return intervals;
+  const hIni = normalizeTimeHhMm(cov.horaInicio);
+  const hFim = normalizeTimeHhMm(cov.horaFim);
+  const overnight = hFim <= hIni;
+
+  let day = cov.dataInicio;
+  let guard = 0;
+  while (day <= cov.dataFim && guard < 366) {
+    const startMs = Date.parse(`${day}T${hIni}:00-03:00`);
+    const endDay = overnight ? addDaysIso(day, 1) : day;
+    const endMs = Date.parse(`${endDay}T${hFim}:00-03:00`);
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+      intervals.push([startMs, endMs]);
+    }
+    day = addDaysIso(day, 1);
+    guard++;
+  }
+  return intervals;
 }
 
 /**
- * Detecta sobreposição de agendas ativas/aguardando aceite do mesmo colaborador.
+ * Detecta sobreposição real de agendas ativas/aguardando aceite do mesmo colaborador
+ * considerando timestamps absolutos em America/Sao_Paulo (suporta turnos noturnos e fronteiras adjacentes).
  */
 export function hasCoverageConflict(
   existing: CoberturaProgramada[],
@@ -52,29 +88,29 @@ export function hasCoverageConflict(
   }
 ): CoberturaProgramada | null {
   const activeStatuses = new Set(['aguardando_aceite', 'aprovada', 'em_andamento']);
-  const cStartMin = toMinutes(candidate.horaInicio);
-  const cEndMin = toMinutes(candidate.horaFim);
-  const cOvernight = cEndMin <= cStartMin;
+  const candIntervals = expandShiftIntervalsMs(candidate);
+  if (candIntervals.length === 0) return null;
 
   for (const cov of existing) {
     if (cov.id === candidate.id) continue;
     if (cov.colaboradorId !== candidate.colaboradorId) continue;
     if (!activeStatuses.has(cov.status)) continue;
 
-    // Intervalos de data se cruzam?
-    if (cov.dataFim < candidate.dataInicio || cov.dataInicio > candidate.dataFim) {
+    // Margem de 1 dia para turnos noturnos que cruzam a meia-noite
+    const covNextDay = addDaysIso(cov.dataFim, 1);
+    const candNextDay = addDaysIso(candidate.dataFim, 1);
+    if (covNextDay < candidate.dataInicio || cov.dataInicio > candNextDay) {
       continue;
     }
 
-    const eStartMin = toMinutes(cov.horaInicio);
-    const eEndMin = toMinutes(cov.horaFim);
-    const eOvernight = eEndMin <= eStartMin;
-
-    if (cOvernight || eOvernight) {
-      return cov;
-    }
-    if (cStartMin < eEndMin && cEndMin > eStartMin) {
-      return cov;
+    const covIntervals = expandShiftIntervalsMs(cov);
+    for (const [cStart, cEnd] of candIntervals) {
+      for (const [eStart, eEnd] of covIntervals) {
+        // Semi-aberto [inicio, fim): turnos exatamente adjacentes (07:00-19:00 vs 19:00-07:00) NÃO conflitam
+        if (cStart < eEnd && cEnd > eStart) {
+          return cov;
+        }
+      }
     }
   }
   return null;
@@ -192,58 +228,28 @@ export async function criarCoberturaProgramada(
 
   const supabase = getSupabase();
   if (supabase) {
-    const { data: userRes } = await supabase.auth.getUser();
-    const uid = userRes?.user?.id || null;
-
-    const { error } = await supabase.from('coberturas_programadas').insert({
-      id: nova.id,
-      empresa_id: nova.empresaId,
-      colaborador_id: nova.colaboradorId,
-      colaborador_nome: nova.colaboradorNome,
-      posto_principal_id: nova.postoPrincipalId,
-      posto_cobertura_id: nova.postoCoberturaId,
-      posto_cobertura_nome: nova.postoCoberturaNome,
-      tipo: nova.tipo,
-      data_inicio: nova.dataInicio,
-      data_fim: nova.dataFim,
-      hora_inicio: nova.horaInicio,
-      hora_fim: nova.horaFim,
-      motivo: nova.motivo || null,
-      substituido_colaborador_id: nova.substituidoColaboradorId,
-      alerta_origem_id: nova.alertaOrigemId,
-      valor_extra_ft: nova.valorExtraFT,
-      status: nova.status,
-      aceite_colaborador: nova.aceiteColaborador,
-      criado_por: uid,
-      criado_por_nome: input.criadoPorNome || null,
-      aprovado_por: statusInicial === 'aprovada' ? uid : null,
+    const { data, error } = await supabase.rpc('criar_cobertura_programada_transacional', {
+      p_colaborador_id: nova.colaboradorId,
+      p_posto_cobertura_id: nova.postoCoberturaId,
+      p_tipo: nova.tipo,
+      p_data_inicio: nova.dataInicio,
+      p_data_fim: nova.dataFim,
+      p_hora_inicio: nova.horaInicio,
+      p_hora_fim: nova.horaFim,
+      p_motivo: nova.motivo || null,
+      p_substituido_colaborador_id: nova.substituidoColaboradorId,
+      p_alerta_origem_id: nova.alertaOrigemId,
+      p_valor_extra_ft: nova.valorExtraFT ?? null,
+      p_exige_aceite: Boolean(input.exigeAceiteColaborador),
     });
 
     if (error) {
       return { success: false, message: `Erro ao salvar escala/cobertura no banco: ${error.message}` };
     }
 
-    await supabase.from('coberturas_historico').insert({
-      empresa_id: nova.empresaId,
-      cobertura_id: nova.id,
-      acao: 'criada',
-      ator_id: uid,
-      ator_nome: input.criadoPorNome || 'Gestão',
-      detalhes: `${nova.tipo} em ${nova.postoCoberturaNome} (${nova.dataInicio} a ${nova.dataFim}, ${nova.horaInicio}-${nova.horaFim})`,
-    });
-
-    await supabase.from('notificacoes_sistema').insert({
-      empresa_id: nova.empresaId,
-      destinatario_colaborador_id: nova.colaboradorId,
-      categoria: 'cobertura',
-      titulo: input.exigeAceiteColaborador
-        ? `Convite de ${nova.tipo === 'extra' ? 'Extra/FT' : 'Cobertura'} em ${nova.postoCoberturaNome}`
-        : `Nova ${nova.tipo} programada em ${nova.postoCoberturaNome}`,
-      mensagem: `${nova.dataInicio} a ${nova.dataFim} (${nova.horaInicio}–${nova.horaFim}). Seu posto habitual permanece preservado.`,
-      referencia_tipo: 'cobertura',
-      referencia_id: nova.id,
-      link_destino: 'minha_escala',
-    });
+    if (data && typeof data === 'object' && 'cobertura_id' in data) {
+      nova.id = String((data as Record<string, unknown>).cobertura_id);
+    }
   }
 
   return {
@@ -259,53 +265,21 @@ export async function responderAceiteCobertura(
   cobertura: CoberturaProgramada,
   aceitar: boolean,
   motivoRecusa?: string,
-  atorNome?: string
+  _atorNome?: string
 ): Promise<{ success: boolean; status: CoberturaProgramada['status']; message: string }> {
   const novoStatus: CoberturaProgramada['status'] = aceitar ? 'aprovada' : 'recusada';
-  const nowIso = new Date().toISOString();
   const supabase = getSupabase();
 
   if (supabase) {
-    const { data: userRes } = await supabase.auth.getUser();
-    const uid = userRes?.user?.id || null;
-
-    const { error } = await supabase
-      .from('coberturas_programadas')
-      .update({
-        status: novoStatus,
-        aceite_colaborador: aceitar,
-        aceite_em: nowIso,
-        recusa_motivo: aceitar ? null : motivoRecusa || 'Recusado pelo colaborador',
-        updated_at: nowIso,
-      })
-      .eq('id', cobertura.id);
+    const { error } = await supabase.rpc('responder_aceite_cobertura', {
+      p_cobertura_id: cobertura.id,
+      p_aceitar: aceitar,
+      p_motivo_recusa: aceitar ? null : motivoRecusa || 'Recusado pelo colaborador',
+    });
 
     if (error) {
       return { success: false, status: cobertura.status, message: `Falha ao registrar resposta: ${error.message}` };
     }
-
-    await supabase.from('coberturas_historico').insert({
-      empresa_id: cobertura.empresaId,
-      cobertura_id: cobertura.id,
-      acao: aceitar ? 'aceita' : 'recusada',
-      ator_id: uid,
-      ator_nome: atorNome || cobertura.colaboradorNome || 'Colaborador',
-      detalhes: aceitar ? 'Colaborador aceitou a escala programada.' : motivoRecusa || 'Recusada pelo colaborador.',
-    });
-
-    await supabase.from('notificacoes_sistema').insert({
-      empresa_id: cobertura.empresaId,
-      destinatario_role: 'supervisor',
-      categoria: 'cobertura',
-      titulo: aceitar
-        ? `Cobertura aceita por ${cobertura.colaboradorNome || 'Colaborador'}`
-        : `Cobertura recusada por ${cobertura.colaboradorNome || 'Colaborador'}`,
-      mensagem: `${cobertura.postoCoberturaNome || cobertura.postoCoberturaId} (${cobertura.dataInicio}): ${
-        aceitar ? 'Confirmada' : motivoRecusa || 'Recusada'
-      }.`,
-      referencia_tipo: 'cobertura',
-      referencia_id: cobertura.id,
-    });
   }
 
   return {
@@ -318,28 +292,19 @@ export async function responderAceiteCobertura(
 export async function atualizarStatusCobertura(
   cobertura: CoberturaProgramada,
   novoStatus: 'cancelada' | 'concluida' | 'aprovada',
-  atorNome?: string,
+  _atorNome?: string,
   detalhes?: string
 ): Promise<{ success: boolean; message: string }> {
   const supabase = getSupabase();
   if (supabase) {
-    const { data: userRes } = await supabase.auth.getUser();
-    const uid = userRes?.user?.id || null;
-    const { error } = await supabase
-      .from('coberturas_programadas')
-      .update({ status: novoStatus, updated_at: new Date().toISOString() })
-      .eq('id', cobertura.id);
+    const { error } = await supabase.rpc('atualizar_status_cobertura_transacional', {
+      p_cobertura_id: cobertura.id,
+      p_novo_status: novoStatus,
+      p_detalhes: detalhes || null,
+    });
 
     if (error) return { success: false, message: error.message };
-
-    await supabase.from('coberturas_historico').insert({
-      empresa_id: cobertura.empresaId,
-      cobertura_id: cobertura.id,
-      acao: novoStatus === 'cancelada' ? 'cancelada' : novoStatus === 'concluida' ? 'concluida' : 'aprovada',
-      ator_id: uid,
-      ator_nome: atorNome || 'Gestão',
-      detalhes: detalhes || `Status alterado para ${novoStatus}`,
-    });
   }
   return { success: true, message: `Status atualizado para ${novoStatus}.` };
 }
+

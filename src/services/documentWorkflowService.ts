@@ -11,6 +11,8 @@ import {
   DocumentoSolicitacao,
   DocumentoHistorico,
   StatusSolicitacaoDocumento,
+  SolicitacaoColaboradorRH,
+  TipoSolicitacaoColaboradorRH,
 } from '../types';
 import { getSupabase } from '../lib/supabase';
 import { computeSha256Hex } from './documentService';
@@ -228,44 +230,18 @@ export async function criarSolicitacaoDocumentoRH(params: {
   };
 
   if (supabase) {
-    const { data: userRes } = await supabase.auth.getUser();
-    const uid = userRes?.user?.id || null;
-    const { error } = await supabase.from('documento_solicitacoes').insert({
-      id: sol.id,
-      empresa_id: sol.empresaId,
-      colaborador_id: sol.colaboradorId,
-      colaborador_nome: sol.colaboradorNome,
-      tipo_documento: sol.tipoDocumento,
-      titulo: sol.titulo,
-      instrucoes: sol.instrucoes || null,
-      prazo_entrega: sol.prazoEntrega || null,
-      obrigatorio: sol.obrigatorio,
-      status: sol.status,
-      solicitado_por: uid,
-      solicitado_por_nome: sol.solicitadoPorNome,
+    const { data, error } = await supabase.rpc('criar_solicitacao_documento_rh_transacional', {
+      p_colaborador_id: sol.colaboradorId,
+      p_tipo_documento: sol.tipoDocumento,
+      p_titulo: sol.titulo,
+      p_instrucoes: sol.instrucoes || null,
+      p_prazo_entrega: sol.prazoEntrega || null,
+      p_obrigatorio: sol.obrigatorio,
     });
     if (error) return { success: false, message: `Erro ao solicitar documento: ${error.message}` };
-
-    await supabase.from('documento_historico').insert({
-      empresa_id: sol.empresaId,
-      solicitacao_id: sol.id,
-      colaborador_id: sol.colaboradorId,
-      acao: 'solicitado',
-      ator_id: uid,
-      ator_nome: params.solicitadoPorNome,
-      detalhes: `RH solicitou "${sol.titulo}"${sol.prazoEntrega ? ` (prazo: ${sol.prazoEntrega})` : ''}.`,
-    });
-
-    await supabase.from('notificacoes_sistema').insert({
-      empresa_id: sol.empresaId,
-      destinatario_colaborador_id: sol.colaboradorId,
-      categoria: 'documento',
-      titulo: `Documento solicitado pelo RH: ${sol.titulo}`,
-      mensagem: sol.instrucoes || `Envie o arquivo em PDF, JPG ou PNG na aba Documentos.`,
-      referencia_tipo: 'documento_solicitacao',
-      referencia_id: sol.id,
-      link_destino: 'documentos',
-    });
+    if (data && typeof data === 'object' && 'solicitacao_id' in data) {
+      sol.id = String((data as Record<string, unknown>).solicitacao_id);
+    }
   }
 
   return { success: true, solicitacao: sol, message: 'Solicitação de documento enviada ao colaborador.' };
@@ -293,6 +269,9 @@ export async function enviarDocumentoColaborador(params: {
   const safeName = params.file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
   const storagePath = `${params.empresaId}/${params.colaboradorId}/${docId}_v${novaVersao}_${safeName}`;
   const todayStr = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo' }).format(new Date());
+  const idempotencyKey = `doc-idem-${params.empresaId}-${params.colaboradorId}-${sha256.slice(0, 24)}-${
+    params.solicitacaoId || safeName.slice(0, 16)
+  }-v${novaVersao}`;
 
   const doc: ColaboradorDocumento = {
     id: docId,
@@ -314,9 +293,6 @@ export async function enviarDocumentoColaborador(params: {
   };
 
   if (supabase) {
-    const { data: userRes } = await supabase.auth.getUser();
-    const uid = userRes?.user?.id || null;
-
     const { error: upErr } = await supabase.storage
       .from(DOCUMENTOS_BUCKET)
       .upload(storagePath, bytes, {
@@ -328,69 +304,43 @@ export async function enviarDocumentoColaborador(params: {
       return { success: false, message: `Falha ao enviar arquivo ao Storage seguro: ${upErr.message}` };
     }
 
-    const { error: dbErr } = await supabase.from('colaborador_documentos').insert({
-      id: doc.id,
-      empresa_id: doc.empresaId,
-      colaborador_id: doc.colaboradorId,
-      solicitacao_id: doc.solicitacaoId || null,
-      titulo: doc.titulo,
-      tipo: doc.tipo,
-      status: 'pendente',
-      versao: novaVersao,
-      documento_anterior_id: doc.documentoAnteriorId || null,
-      data_emissao: doc.dataEmissao,
-      storage_bucket: DOCUMENTOS_BUCKET,
-      storage_path: storagePath,
-      mime_type: doc.mimeType,
-      file_size_bytes: doc.fileSizeBytes,
-      sha256: doc.sha256,
-      tamanho_kb: doc.tamanhoKb,
-      enviado_por: uid,
+    const { data: rpcData, error: rpcErr } = await supabase.rpc('registrar_documento_colaborador_transacional', {
+      p_colaborador_id: doc.colaboradorId,
+      p_titulo: doc.titulo,
+      p_tipo: doc.tipo,
+      p_storage_bucket: DOCUMENTOS_BUCKET,
+      p_storage_path: storagePath,
+      p_mime_type: doc.mimeType,
+      p_file_size_bytes: doc.fileSizeBytes,
+      p_sha256: doc.sha256,
+      p_solicitacao_id: doc.solicitacaoId || null,
+      p_idempotency_key: idempotencyKey,
+      p_documento_anterior_id: doc.documentoAnteriorId || null,
+      p_versao_anterior: params.versaoAtual || 0,
     });
 
-    if (dbErr) {
-      return { success: false, message: `Arquivo enviado, mas falha ao gravar metadados: ${dbErr.message}` };
+    if (rpcErr) {
+      // Limpa arquivo recém-enviado no Storage para não deixar órfão privado sem metadado
+      await supabase.storage.from(DOCUMENTOS_BUCKET).remove([storagePath]).catch(() => undefined);
+      return { success: false, message: `Falha ao registrar documento no banco: ${rpcErr.message}` };
     }
 
-    if (params.solicitacaoId) {
-      await supabase
-        .from('documento_solicitacoes')
-        .update({ status: 'enviado_analise', updated_at: new Date().toISOString() })
-        .eq('id', params.solicitacaoId);
+    if (rpcData && typeof rpcData === 'object') {
+      const resObj = rpcData as Record<string, unknown>;
+      if (resObj.documento_id) doc.id = String(resObj.documento_id);
+      if (resObj.versao !== undefined) doc.versao = Number(resObj.versao);
     }
-
-    await supabase.from('documento_historico').insert({
-      empresa_id: doc.empresaId,
-      solicitacao_id: params.solicitacaoId || null,
-      documento_id: doc.id,
-      colaborador_id: doc.colaboradorId,
-      acao: 'enviado',
-      ator_id: uid,
-      ator_nome: params.colaboradorNome,
-      detalhes: `Arquivo ${params.file.name} (v${novaVersao}, ${doc.tamanhoKb} KB, SHA256 ${sha256.slice(0, 12)}) enviado para análise do RH.`,
-    });
-
-    await supabase.from('notificacoes_sistema').insert({
-      empresa_id: doc.empresaId,
-      destinatario_role: 'rh',
-      categoria: 'documento',
-      titulo: `Documento enviado: ${params.colaboradorNome}`,
-      mensagem: `${doc.titulo} (v${novaVersao}) aguardando conferência do RH.`,
-      referencia_tipo: 'colaborador_documento',
-      referencia_id: doc.id,
-      link_destino: 'rh',
-    });
   }
 
   return { success: true, documento: doc, message: 'Documento enviado com sucesso para conferência do RH.' };
 }
 
 export async function getDocumentoSignedUrl(
-  documento: Pick<ColaboradorDocumento, 'id' | 'empresaId' | 'colaboradorId' | 'storageBucket' | 'storagePath' | 'arquivoUrl'>,
-  atorNome?: string
+  documento: Pick<ColaboradorDocumento, 'id' | 'empresaId' | 'colaboradorId' | 'storageBucket' | 'storagePath'>,
+  _atorNome?: string
 ): Promise<{ url: string | null; message?: string }> {
   if (!documento.storagePath) {
-    return { url: documento.arquivoUrl || null, message: documento.arquivoUrl ? undefined : 'Documento sem arquivo anexado no Storage.' };
+    return { url: null, message: 'Documento privado sem caminho autorizado no Storage.' };
   }
   const supabase = getSupabase();
   if (!supabase) return { url: null, message: 'Supabase indisponível.' };
@@ -401,16 +351,7 @@ export async function getDocumentoSignedUrl(
     return { url: null, message: `Erro ao gerar URL assinada: ${error?.message || 'Desconhecido'}` };
   }
 
-  const { data: userRes } = await supabase.auth.getUser();
-  await supabase.from('documento_historico').insert({
-    empresa_id: documento.empresaId || 'emp-matriz-principal',
-    documento_id: documento.id,
-    colaborador_id: documento.colaboradorId,
-    acao: 'visualizado',
-    ator_id: userRes?.user?.id || null,
-    ator_nome: atorNome || 'Usuário',
-    detalhes: 'URL assinada gerada (validade 120s).',
-  });
+  await supabase.rpc('registrar_visualizacao_documento', { p_documento_id: documento.id });
 
   return { url: data.signedUrl };
 }
@@ -422,15 +363,7 @@ export async function revisarDocumentoRH(params: {
   revisorNome: string;
 }): Promise<{ success: boolean; message: string }> {
   const supabase = getSupabase();
-  const docStatus: ColaboradorDocumento['status'] =
-    params.decisao === 'aprovar' ? 'valido' : params.decisao === 'recusar' ? 'recusado' : 'solicitado';
-  const solStatus: StatusSolicitacaoDocumento =
-    params.decisao === 'aprovar'
-      ? 'aprovado'
-      : params.decisao === 'recusar'
-      ? 'recusado'
-      : 'atualizacao_solicitada';
-  const acaoHist: DocumentoHistorico['acao'] =
+  const rpcDecisao =
     params.decisao === 'aprovar'
       ? 'aprovado'
       : params.decisao === 'recusar'
@@ -438,56 +371,13 @@ export async function revisarDocumentoRH(params: {
       : 'atualizacao_solicitada';
 
   if (supabase) {
-    const { data: userRes } = await supabase.auth.getUser();
-    const uid = userRes?.user?.id || null;
-    const nowIso = new Date().toISOString();
-
-    const { error } = await supabase
-      .from('colaborador_documentos')
-      .update({
-        status: docStatus,
-        revisado_por: uid,
-        revisado_por_nome: params.revisorNome,
-        revisado_em: nowIso,
-        observacao_revisao: params.observacao || null,
-      })
-      .eq('id', params.documento.id);
-
-    if (error) return { success: false, message: `Falha ao atualizar documento: ${error.message}` };
-
-    if (params.documento.solicitacaoId) {
-      await supabase
-        .from('documento_solicitacoes')
-        .update({ status: solStatus, updated_at: nowIso })
-        .eq('id', params.documento.solicitacaoId);
-    }
-
-    await supabase.from('documento_historico').insert({
-      empresa_id: params.documento.empresaId || 'emp-matriz-principal',
-      solicitacao_id: params.documento.solicitacaoId || null,
-      documento_id: params.documento.id,
-      colaborador_id: params.documento.colaboradorId,
-      acao: acaoHist,
-      ator_id: uid,
-      ator_nome: params.revisorNome,
-      detalhes: params.observacao || `Documento marcado como ${docStatus} pelo RH.`,
+    const { error } = await supabase.rpc('revisar_documento_colaborador_transacional', {
+      p_documento_id: params.documento.id,
+      p_decisao: rpcDecisao,
+      p_observacao: params.observacao || null,
     });
 
-    await supabase.from('notificacoes_sistema').insert({
-      empresa_id: params.documento.empresaId || 'emp-matriz-principal',
-      destinatario_colaborador_id: params.documento.colaboradorId,
-      categoria: 'documento',
-      titulo:
-        params.decisao === 'aprovar'
-          ? `Documento aprovado: ${params.documento.titulo}`
-          : params.decisao === 'recusar'
-          ? `Documento recusado: ${params.documento.titulo}`
-          : `Atualização solicitada: ${params.documento.titulo}`,
-      mensagem: params.observacao || 'Acesse a aba Documentos para verificar a revisão do RH.',
-      referencia_tipo: 'colaborador_documento',
-      referencia_id: params.documento.id,
-      link_destino: 'documentos',
-    });
+    if (error) return { success: false, message: `Falha ao revisar documento: ${error.message}` };
   }
 
   return {
@@ -500,3 +390,102 @@ export async function revisarDocumentoRH(params: {
         : 'Solicitação de nova versão enviada ao colaborador.',
   };
 }
+
+export function mapSolicitacaoColaboradorRH(r: Record<string, unknown>): SolicitacaoColaboradorRH {
+  return {
+    id: String(r.id),
+    empresaId: String(r.empresa_id || 'emp-matriz-principal'),
+    protocolo: String(r.protocolo || ''),
+    colaboradorId: String(r.colaborador_id),
+    colaboradorNome: String(r.colaborador_nome || ''),
+    tipo: (r.tipo as TipoSolicitacaoColaboradorRH) || 'Outro',
+    assunto: String(r.assunto || ''),
+    descricao: String(r.descricao || ''),
+    status: (r.status as SolicitacaoColaboradorRH['status']) || 'aberta',
+    responsavelRhNome: r.responsavel_rh_nome ? String(r.responsavel_rh_nome) : undefined,
+    respostaRh: r.resposta_rh ? String(r.resposta_rh) : undefined,
+    respondidaEm: r.respondida_em ? String(r.respondida_em) : undefined,
+    createdAt: String(r.created_at || new Date().toISOString()),
+    updatedAt: r.updated_at ? String(r.updated_at) : undefined,
+  };
+}
+
+export async function fetchSolicitacoesColaboradorRH(colaboradorId?: string): Promise<SolicitacaoColaboradorRH[]> {
+  const supabase = getSupabase();
+  if (!supabase) return [];
+  let q = supabase.from('solicitacoes_colaborador_rh').select('*').order('created_at', { ascending: false });
+  if (colaboradorId) q = q.eq('colaborador_id', colaboradorId);
+  const { data, error } = await q.limit(100);
+  if (error || !data) return [];
+  return (data as Record<string, unknown>[]).map(mapSolicitacaoColaboradorRH);
+}
+
+export async function criarSolicitacaoColaboradorRH(params: {
+  empresaId: string;
+  colaboradorId: string;
+  colaboradorNome: string;
+  tipo: TipoSolicitacaoColaboradorRH;
+  assunto: string;
+  descricao: string;
+}): Promise<{ success: boolean; solicitacao?: SolicitacaoColaboradorRH; message: string }> {
+  const supabase = getSupabase();
+  const nowIso = new Date().toISOString();
+  const idempotencyKey = `pedrh-${params.colaboradorId}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+  const localItem: SolicitacaoColaboradorRH = {
+    id: idempotencyKey,
+    empresaId: params.empresaId || 'emp-matriz-principal',
+    protocolo: `RH-${nowIso.slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+    colaboradorId: params.colaboradorId,
+    colaboradorNome: params.colaboradorNome,
+    tipo: params.tipo,
+    assunto: params.assunto,
+    descricao: params.descricao,
+    status: 'aberta',
+    createdAt: nowIso,
+  };
+
+  if (supabase) {
+    const { data, error } = await supabase.rpc('criar_solicitacao_colaborador_rh', {
+      p_colaborador_id: params.colaboradorId,
+      p_tipo: params.tipo,
+      p_assunto: params.assunto,
+      p_descricao: params.descricao,
+      p_idempotency_key: idempotencyKey,
+    });
+    if (error) {
+      return { success: false, message: `Erro ao registrar solicitação ao RH: ${error.message}` };
+    }
+    if (data && typeof data === 'object') {
+      const resObj = data as Record<string, unknown>;
+      if (resObj.id) localItem.id = String(resObj.id);
+      if (resObj.protocolo) localItem.protocolo = String(resObj.protocolo);
+    }
+  }
+
+  return {
+    success: true,
+    solicitacao: localItem,
+    message: `Solicitação registrada (${localItem.protocolo}) e enviada à fila do RH.`,
+  };
+}
+
+export async function responderSolicitacaoColaboradorRH(params: {
+  solicitacaoId: string;
+  status: 'em_analise' | 'aguardando_colaborador' | 'concluida' | 'recusada';
+  respostaRh: string;
+}): Promise<{ success: boolean; message: string }> {
+  const supabase = getSupabase();
+  if (supabase) {
+    const { error } = await supabase.rpc('responder_solicitacao_colaborador_rh', {
+      p_solicitacao_id: params.solicitacaoId,
+      p_status: params.status,
+      p_resposta_rh: params.respostaRh,
+    });
+    if (error) {
+      return { success: false, message: `Falha ao responder solicitação: ${error.message}` };
+    }
+  }
+  return { success: true, message: 'Resposta registrada e colaborador notificado.' };
+}
+

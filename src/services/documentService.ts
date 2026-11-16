@@ -196,11 +196,12 @@ export async function generateHoleritePdfBytes(
   const liquido = holerite.liquidoReceber ?? Math.max(0, totalProventos - totalDescontos);
 
   y -= 10;
+  const fgtsValor = holerite.fgtsInformativo ?? holerite.descontoFGTS ?? 0;
   page.drawRectangle({ x: left, y: y - 34, width: right - left, height: 42, color: dark });
-  page.drawText(`Proventos: R$ ${totalProventos.toFixed(2)} | Descontos: R$ ${totalDescontos.toFixed(2)} | FGTS (8%): R$ ${holerite.descontoFGTS.toFixed(2)}`, {
-    x: left + 12,
+  page.drawText(`Proventos: R$ ${totalProventos.toFixed(2)} | Descontos: R$ ${totalDescontos.toFixed(2)} | FGTS Depositado (8% - Informativo Empregador, nao descontado): R$ ${fgtsValor.toFixed(2)}`, {
+    x: left + 10,
     y: y - 6,
-    size: 8.5,
+    size: 7.5,
     font: fontRegular,
     color: rgb(0.8, 0.85, 0.92),
   });

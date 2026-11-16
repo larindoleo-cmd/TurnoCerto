@@ -53,9 +53,11 @@ export interface Colaborador {
   valorBonus?: number;
   // Credenciais de Acesso ao Painel
   email?: string;
-  senha?: string;
   role?: 'admin' | 'supervisor' | 'rh' | 'funcionario';
   primeiroAcessoConcluido?: boolean;
+  afastamentoInicio?: string;
+  afastamentoFim?: string;
+  substituicaoAtivaId?: string;
 }
 
 export interface NovoFuncionarioPayload {
@@ -198,14 +200,16 @@ export interface HoleriteRegistro {
   plantoesFT?: number; // Folga Trabalhada (contabilizada em plantões)
   valorFT?: number;
   descontoINSS: number;
-  descontoFGTS: number; // 8% recolhido
+  descontoFGTS: number; // 8% recolhido pelo empregador (informativo)
+  fgtsInformativo?: number;
+  origemCalculo?: string;
   descontoVT: number;
   descontoVR: number;
   bonusAssiduidade?: number;
   bonusAtivo?: boolean;
   motivoPerdaBonus?: string;
   liquidoReceber: number;
-  statusEnvio: 'Assinado' | 'Aguardando Assinatura' | 'Pendente';
+  statusEnvio: 'Recebimento confirmado' | 'Aguardando Confirmação' | 'Assinado' | 'Aguardando Assinatura' | 'Pendente';
   dataEmissao: string;
   loteId?: string;
   versao?: number;
@@ -342,6 +346,7 @@ export interface PontoEvento {
   fotoBiometriaUrl?: string;
   metodoAutenticacao: 'biometria_facial' | 'biometria_passkey' | 'autenticador_dispositivo' | 'excecao_autorizada';
   verificationStatus: 'confirmado' | 'pendente' | 'rejeitado';
+  revisaoPendente?: boolean;
   classificacaoPosto?: ClassificacaoPosto;
   postoBaseId?: string;
   postoDetectadoId?: string;
@@ -522,6 +527,31 @@ export interface SolicitacaoCorrecaoPonto {
   status: 'pendente' | 'aprovado' | 'rejeitado';
   criadoEm: string;
   respostaRH?: string;
+}
+
+export type TipoSolicitacaoColaboradorRH =
+  | 'Dúvida sobre Holerite'
+  | 'Férias / Folga'
+  | 'Vale-Transporte / Benefícios'
+  | 'Solicitação de Documento'
+  | 'Atestado / Declaração'
+  | 'Outro';
+
+export interface SolicitacaoColaboradorRH {
+  id: string;
+  empresaId: string;
+  protocolo: string;
+  colaboradorId: string;
+  colaboradorNome: string;
+  tipo: TipoSolicitacaoColaboradorRH;
+  assunto: string;
+  descricao: string;
+  status: 'aberta' | 'em_analise' | 'aguardando_colaborador' | 'concluida' | 'recusada';
+  responsavelRhNome?: string;
+  respostaRh?: string;
+  respondidaEm?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface OcorrenciaColaborador {

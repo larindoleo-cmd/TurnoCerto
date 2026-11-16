@@ -12,6 +12,7 @@ import { runGpsPontoTests } from './src/services/__tests__/gps_ponto.test.ts';
 import { runCoberturasTests } from './src/services/__tests__/coberturas.test.ts';
 import { runDocumentosTests } from './src/services/__tests__/documentos.test.ts';
 import { runHoleritesPdfTests } from './src/services/__tests__/holerites_pdf.test.ts';
+import { runAuthSegurancaTests } from './src/services/__tests__/auth_seguranca.test.ts';
 
 async function main() {
   console.log('Iniciando Suite Completa de Testes Automatizados TurnoCerto...\n');
@@ -22,6 +23,7 @@ async function main() {
     { name: 'Escalas, Extras e Conflitos de Cobertura', fn: runCoberturasTests },
     { name: 'Validação Binária de Documentos (RH <-> Funcionário)', fn: runDocumentosTests },
     { name: 'Geração Real de PDF (%PDF-) e Agendamento Brasília', fn: runHoleritesPdfTests },
+    { name: 'Segurança, RLS SQL, Autenticação e Integridade', fn: runAuthSegurancaTests },
   ];
 
   let totalPassed = 0;

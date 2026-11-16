@@ -4,10 +4,17 @@ import { useApp } from '../../../context/AppContext';
 
 interface AcessoBloqueadoScreenProps {
   onFaleComRH?: () => void;
+  reason?: string | null;
+  email?: string | null;
 }
 
-export const AcessoBloqueadoScreen: React.FC<AcessoBloqueadoScreenProps> = ({ onFaleComRH }) => {
+export const AcessoBloqueadoScreen: React.FC<AcessoBloqueadoScreenProps> = ({
+  onFaleComRH,
+  reason,
+  email,
+}) => {
   const { logout, currentUser, empresaInfo } = useApp();
+  const displayEmail = email || currentUser?.email || 'conta autenticada';
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#050814] via-[#080E24] to-[#0A122E] flex flex-col justify-center items-center px-4 py-8 text-slate-100 font-['Plus_Jakarta_Sans',sans-serif]">
@@ -25,10 +32,18 @@ export const AcessoBloqueadoScreen: React.FC<AcessoBloqueadoScreenProps> = ({ on
             Acesso Individual Bloqueado
           </span>
           <h1 className="text-xl font-bold text-white tracking-tight">
-            Vínculo de Colaborador Não Localizado
+            {reason ? 'Perfil de Acesso Inválido ou Bloqueado' : 'Vínculo de Colaborador Não Localizado'}
           </h1>
           <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-            Sua conta de acesso (<span className="text-slate-200 font-mono">{currentUser?.email}</span>) não possui um cadastro ativo de colaborador ou posto de trabalho vinculado no sistema.
+            {reason ? (
+              <>
+                A conta (<span className="text-slate-200 font-mono">{displayEmail}</span>) não pôde prosseguir: <span className="text-red-300 font-semibold">{reason}</span>
+              </>
+            ) : (
+              <>
+                Sua conta de acesso (<span className="text-slate-200 font-mono">{displayEmail}</span>) não possui um cadastro ativo de colaborador ou posto de trabalho vinculado no sistema.
+              </>
+            )}
           </p>
         </div>
 
@@ -39,7 +54,7 @@ export const AcessoBloqueadoScreen: React.FC<AcessoBloqueadoScreenProps> = ({ on
             <div className="text-[11px] text-slate-300 space-y-1">
               <strong className="text-white block">Política Estrita de Segurança e LGPD:</strong>
               <p className="text-slate-400">
-                Por motivos de conformidade legal e proteção de dados, o TurnoCerto proíbe fallbacks genéricos. Para liberar o registro de ponto biométrico, escala e holerites, seu vínculo deve ser regularizado pela Supervisão ou Recursos Humanos.
+                Por motivos de conformidade legal e proteção de dados, o TurnoCerto proíbe fallbacks genéricos de perfil ou empresa. Para liberar o registro de ponto biométrico, escala e holerites, seu vínculo e tenant devem estar regularmente configurados pela Supervisão ou Recursos Humanos.
               </p>
             </div>
           </div>

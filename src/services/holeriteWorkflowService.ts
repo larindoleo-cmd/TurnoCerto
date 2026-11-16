@@ -50,7 +50,9 @@ export function mapHoleriteRow(r: Record<string, unknown>): HoleriteRegistro {
     plantoesFT: r.plantoes_ft !== undefined && r.plantoes_ft !== null ? Number(r.plantoes_ft) : undefined,
     valorFT: r.valor_ft !== undefined && r.valor_ft !== null ? Number(r.valor_ft) : undefined,
     descontoINSS: Number(r.desconto_inss || 0),
-    descontoFGTS: Number(r.desconto_fgts || 0),
+    descontoFGTS: Number(r.fgts_informativo ?? r.desconto_fgts ?? 0),
+    fgtsInformativo: Number(r.fgts_informativo ?? r.desconto_fgts ?? 0),
+    origemCalculo: r.origem_calculo ? String(r.origem_calculo) : undefined,
     descontoVT: Number(r.desconto_vt || 0),
     descontoVR: Number(r.desconto_vr || 0),
     bonusAssiduidade: r.bonus_assiduidade !== undefined ? Number(r.bonus_assiduidade) : 0,
@@ -123,27 +125,48 @@ export async function fetchHoleriteEventos(holeriteId?: string): Promise<Holerit
   }));
 }
 
+export interface OfficialPayrollOverride {
+  salarioBase?: number;
+  adicionalPericulosidade?: number;
+  adicionalNoturno?: number;
+  valorFT?: number;
+  descontoINSS?: number;
+  descontoVT?: number;
+  descontoVR?: number;
+  bonusAssiduidade?: number;
+}
+
 export function buildHoleriteFromColaborador(
   colab: Colaborador,
   competencia: string,
   mesReferenciaLabel: string,
   loteId: string,
   statusPublicacao: StatusPublicacaoHolerite,
-  agendadoParaIso?: string
+  agendadoParaIso?: string,
+  override?: OfficialPayrollOverride,
+  origemCalculo: string = 'previa_estimada_app'
 ): HoleriteRegistro {
-  const salarioBase = Number(colab.salarioBase || 2200);
-  const periculosidade = colab.funcao === 'Vigilante Patrimonial' ? Number((salarioBase * 0.3).toFixed(2)) : 0;
-  const adicionalNoturno = colab.turno === 'noturno' ? Number((salarioBase * 0.2).toFixed(2)) : 0;
+  const salarioBase = Number(override?.salarioBase ?? colab.salarioBase ?? 0);
+  if (!Number.isFinite(salarioBase) || salarioBase <= 0) {
+    throw new Error(`Colaborador "${colab.nome}" não possui salário base válido informado para emissão.`);
+  }
+  const periculosidade =
+    override?.adicionalPericulosidade ??
+    (colab.funcao === 'Vigilante Patrimonial' ? Number((salarioBase * 0.3).toFixed(2)) : 0);
+  const adicionalNoturno =
+    override?.adicionalNoturno ??
+    (colab.turno === 'noturno' ? Number((salarioBase * 0.2).toFixed(2)) : 0);
   const plantoesFT = Number(colab.plantoesFT || 0);
-  const valorFT = Number(((colab.valorExtraFT || 160) * plantoesFT).toFixed(2));
-  const bonusAtivo = colab.status !== 'falta' && colab.status !== 'afastado' && (colab.valorBonus || 0) > 0;
-  const bonusValor = bonusAtivo ? Number(colab.valorBonus || 0) : 0;
+  const valorFT =
+    override?.valorFT ?? Number(((colab.valorExtraFT || 160) * plantoesFT).toFixed(2));
+  const bonusAtivo = colab.status !== 'falta' && colab.status !== 'afastado' && (override?.bonusAssiduidade ?? colab.valorBonus ?? 0) > 0;
+  const bonusValor = bonusAtivo ? Number(override?.bonusAssiduidade ?? colab.valorBonus ?? 0) : 0;
 
   const totalBruto = salarioBase + periculosidade + adicionalNoturno + valorFT + bonusValor;
-  const descontoINSS = Number((totalBruto * 0.09).toFixed(2));
-  const descontoFGTS = Number((totalBruto * 0.08).toFixed(2));
-  const descontoVT = colab.recebeVT !== false ? Number((salarioBase * 0.06).toFixed(2)) : 0;
-  const descontoVR = colab.recebeVR ? Number(((colab.valorVR || 25) * 0.1 * 15).toFixed(2)) : 0;
+  const descontoINSS = override?.descontoINSS ?? Number((totalBruto * 0.09).toFixed(2));
+  const fgtsInformativo = Number((totalBruto * 0.08).toFixed(2));
+  const descontoVT = override?.descontoVT ?? (colab.recebeVT !== false ? Number((salarioBase * 0.06).toFixed(2)) : 0);
+  const descontoVR = override?.descontoVR ?? (colab.recebeVR ? Number(((colab.valorVR || 25) * 0.1 * 15).toFixed(2)) : 0);
   const liquido = Number(Math.max(0, totalBruto - descontoINSS - descontoVT - descontoVR).toFixed(2));
 
   const now = new Date();
@@ -167,13 +190,15 @@ export function buildHoleriteFromColaborador(
     plantoesFT,
     valorFT,
     descontoINSS,
-    descontoFGTS,
+    descontoFGTS: fgtsInformativo,
+    fgtsInformativo,
+    origemCalculo,
     descontoVT,
     descontoVR,
-    bonusAssiduidade: colab.valorBonus || 0,
+    bonusAssiduidade: override?.bonusAssiduidade ?? colab.valorBonus ?? 0,
     bonusAtivo,
     liquidoReceber: liquido,
-    statusEnvio: statusPublicacao === 'publicado' ? 'Aguardando Assinatura' : 'Pendente',
+    statusEnvio: statusPublicacao === 'publicado' ? 'Aguardando Confirmação' : 'Pendente',
     dataEmissao,
     loteId,
     versao: 1,
@@ -191,6 +216,8 @@ export async function emitirLoteHolerites(params: {
   modo: 'rascunho' | 'agendar' | 'publicar_agora';
   agendadoLocalSaoPaulo?: string; // YYYY-MM-DDTHH:mm
   criadoPorNome: string;
+  rubricasOficiaisConfirmadas?: boolean;
+  rubricasPorColaborador?: Record<string, OfficialPayrollOverride>;
 }): Promise<{
   success: boolean;
   lote?: HoleriteLote;
@@ -199,6 +226,23 @@ export async function emitirLoteHolerites(params: {
 }> {
   if (params.colaboradores.length === 0) {
     return { success: false, holerites: [], message: 'Selecione ao menos um colaborador para gerar o lote.' };
+  }
+
+  if (params.modo !== 'rascunho' && !params.rubricasOficiaisConfirmadas) {
+    return {
+      success: false,
+      holerites: [],
+      message: 'Confirme que as rubricas oficiais da folha/contabilidade foram validadas antes de agendar ou publicar holerites.',
+    };
+  }
+
+  const supabase = getSupabase();
+  if (!supabase && params.modo !== 'rascunho') {
+    return {
+      success: false,
+      holerites: [],
+      message: 'Conexão autenticada com Supabase é obrigatória para publicar ou agendar holerites oficiais. Use "Salvar Rascunho" apenas para prévia local.',
+    };
   }
 
   let agendadoIso: string | undefined;
@@ -215,13 +259,13 @@ export async function emitirLoteHolerites(params: {
     params.modo === 'publicar_agora' ? 'publicado' : params.modo === 'agendar' ? 'agendado' : 'rascunho';
   const statusItem: StatusPublicacaoHolerite =
     params.modo === 'publicar_agora' ? 'publicado' : params.modo === 'agendar' ? 'agendado' : 'rascunho';
+  const origemCalculo = params.rubricasOficiaisConfirmadas ? 'folha_importada_validada' : 'previa_estimada_app';
 
   const nowIso = new Date().toISOString();
   const itens: HoleriteRegistro[] = [];
   let errorCount = 0;
   let lastErr: string | undefined;
 
-  const supabase = getSupabase();
   let uid: string | null = null;
   if (supabase) {
     const { data: uRes } = await supabase.auth.getUser();
@@ -247,17 +291,20 @@ export async function emitirLoteHolerites(params: {
   }
 
   for (const colab of params.colaboradores) {
-    const hol = buildHoleriteFromColaborador(
-      colab,
-      params.competencia,
-      params.mesReferenciaLabel,
-      loteId,
-      statusItem,
-      agendadoIso
-    );
-    hol.empresaId = empresaId;
-
+    let hol: HoleriteRegistro | null = null;
     try {
+      hol = buildHoleriteFromColaborador(
+        colab,
+        params.competencia,
+        params.mesReferenciaLabel,
+        loteId,
+        statusItem,
+        agendadoIso,
+        params.rubricasPorColaborador?.[colab.id],
+        origemCalculo
+      );
+      hol.empresaId = empresaId;
+
       const pdfRes = await generateHoleritePdfBytes(hol, colab, params.empresa);
       hol.pdfSha256 = pdfRes.sha256;
       const storagePath = `${empresaId}/${colab.id}/${hol.id}.pdf`;
@@ -269,80 +316,49 @@ export async function emitirLoteHolerites(params: {
           .upload(storagePath, pdfRes.bytes, { contentType: 'application/pdf', upsert: true });
 
         if (upErr) {
-          // Storage opcional em ambiente sem bucket criado — registra erro apenas se DB falhar
-          console.warn('Upload PDF Storage aviso:', upErr.message);
+          throw new Error(`Falha ao armazenar PDF privado (${colab.nome}): ${upErr.message}`);
         }
 
-        const { error: holErr } = await supabase.from('holerites').insert({
-          id: hol.id,
-          empresa_id: empresaId,
-          colaborador_id: hol.colaboradorId,
-          colaborador_nome: hol.colaboradorNome,
-          matricula: hol.matricula,
-          funcao: hol.funcao,
-          posto_nome: hol.postoNome,
-          mes_referencia: hol.mesReferencia,
-          competencia: hol.competencia,
-          salario_base: hol.salarioBase,
-          adicional_periculosidade: hol.adicionalPericulosidade,
-          adicional_noturno: hol.adicionalNoturno,
-          horas_extras_50: hol.horasExtras50,
-          valor_horas_extras: hol.valorHorasExtras,
-          plantoes_ft: hol.plantoesFT || 0,
-          valor_ft: hol.valorFT || 0,
-          desconto_inss: hol.descontoINSS,
-          desconto_fgts: hol.descontoFGTS,
-          desconto_vt: hol.descontoVT,
-          desconto_vr: hol.descontoVR,
-          bonus_assiduidade: hol.bonusAssiduidade || 0,
-          bonus_ativo: hol.bonusAtivo !== false,
-          liquido_receber: hol.liquidoReceber,
-          salario_liquido: hol.liquidoReceber,
-          status_envio: hol.statusEnvio,
-          data_emissao: hol.dataEmissao,
-          lote_id: loteId,
-          versao: 1,
-          status_publicacao: statusItem,
-          agendado_para: agendadoIso || null,
-          publicado_em: statusItem === 'publicado' ? nowIso : null,
-          storage_bucket: HOLERITES_BUCKET,
-          storage_path: storagePath,
-          pdf_sha256: hol.pdfSha256,
+        const { error: rpcErr } = await supabase.rpc('emitir_item_holerite_transacional', {
+          p_holerite_id: hol.id,
+          p_lote_id: loteId,
+          p_colaborador_id: hol.colaboradorId,
+          p_competencia: params.competencia,
+          p_mes_referencia: hol.mesReferencia,
+          p_salario_base: hol.salarioBase,
+          p_adicional_periculosidade: hol.adicionalPericulosidade,
+          p_adicional_noturno: hol.adicionalNoturno,
+          p_horas_extras_50: hol.horasExtras50,
+          p_valor_horas_extras: hol.valorHorasExtras,
+          p_plantoes_ft: hol.plantoesFT || 0,
+          p_valor_ft: hol.valorFT || 0,
+          p_desconto_inss: hol.descontoINSS,
+          p_fgts_informativo: hol.fgtsInformativo ?? hol.descontoFGTS,
+          p_desconto_vt: hol.descontoVT,
+          p_desconto_vr: hol.descontoVR,
+          p_bonus_assiduidade: hol.bonusAssiduidade || 0,
+          p_bonus_ativo: hol.bonusAtivo !== false,
+          p_liquido_receber: hol.liquidoReceber,
+          p_status_publicacao: statusItem,
+          p_agendado_para: agendadoIso || null,
+          p_storage_path: storagePath,
+          p_pdf_sha256: hol.pdfSha256,
+          p_origem_calculo: origemCalculo,
         });
 
-        if (holErr) throw new Error(holErr.message);
-
-        await supabase.from('holerite_eventos').insert({
-          empresa_id: empresaId,
-          holerite_id: hol.id,
-          lote_id: loteId,
-          acao: statusItem === 'publicado' ? 'publicado' : statusItem === 'agendado' ? 'agendado' : 'rascunho_criado',
-          ator_id: uid,
-          ator_nome: params.criadoPorNome,
-          detalhes: `Holerite ${hol.mesReferencia} v1 (${statusItem}) · SHA256 ${hol.pdfSha256.slice(0, 12)}.`,
-        });
-
-        if (statusItem === 'publicado') {
-          await supabase.from('notificacoes_sistema').insert({
-            empresa_id: empresaId,
-            destinatario_colaborador_id: colab.id,
-            categoria: 'holerite',
-            titulo: `Holerite ${hol.mesReferencia} disponível`,
-            mensagem: `Seu demonstrativo de pagamento (${hol.mesReferencia}) foi publicado. Confirme recebimento na aba Documentos.`,
-            referencia_tipo: 'holerite',
-            referencia_id: hol.id,
-            link_destino: 'documentos',
-          });
-        }
+        if (rpcErr) throw new Error(rpcErr.message);
       }
+
+      itens.push(hol);
     } catch (err) {
       errorCount++;
       lastErr = err instanceof Error ? err.message : 'Erro ao emitir item';
-      hol.statusPublicacao = 'erro';
-      hol.ultimoErro = lastErr;
+      if (hol) {
+        hol.statusPublicacao = 'erro';
+        hol.ultimoErro = lastErr;
+        itens.push(hol);
+      }
     }
-
-    itens.push(hol);
   }
 
   if (supabase && errorCount > 0) {
@@ -376,68 +392,35 @@ export async function emitirLoteHolerites(params: {
     message:
       errorCount > 0
         ? `Lote concluído com ${errorCount} erro(s): ${lastErr}`
+        : !supabase
+        ? `${itens.length} rascunho(s) gerados apenas como prévia local (não salvos no servidor).`
         : statusLote === 'publicado'
         ? `${itens.length} holerite(s) publicados e notificados aos colaboradores.`
         : statusLote === 'agendado'
-        ? `${itens.length} holerite(s) agendados para publicação automática em Brasília.`
-        : `${itens.length} rascunho(s) de holerite salvos.`,
+        ? `${itens.length} holerite(s) agendados para publicação automática em Brasília (processados no próximo ciclo do cron a cada 5 minutos).`
+        : `${itens.length} rascunho(s) de holerite salvos no servidor.`,
   };
 }
 
 export async function publicarLoteAgora(
   lote: HoleriteLote,
-  itensLote: HoleriteRegistro[],
-  atorNome: string
+  _itensLote: HoleriteRegistro[],
+  _atorNome: string
 ): Promise<{ success: boolean; message: string }> {
   const supabase = getSupabase();
-  const nowIso = new Date().toISOString();
-
-  if (supabase) {
-    const { data: uRes } = await supabase.auth.getUser();
-    const uid = uRes?.user?.id || null;
-
-    const { error: upHolErr } = await supabase
-      .from('holerites')
-      .update({
-        status_publicacao: 'publicado',
-        publicado_em: nowIso,
-        status_envio: 'Aguardando Assinatura',
-        ultimo_erro: null,
-      })
-      .eq('lote_id', lote.id)
-      .in('status_publicacao', ['rascunho', 'agendado', 'erro']);
-
-    if (upHolErr) return { success: false, message: upHolErr.message };
-
-    await supabase
-      .from('holerite_lotes')
-      .update({ status: 'publicado', publicado_em: nowIso, total_erros: 0, ultimo_erro: null })
-      .eq('id', lote.id);
-
-    for (const h of itensLote) {
-      await supabase.from('notificacoes_sistema').insert({
-        empresa_id: lote.empresaId,
-        destinatario_colaborador_id: h.colaboradorId,
-        categoria: 'holerite',
-        titulo: `Holerite ${h.mesReferencia} disponível`,
-        mensagem: `Seu holerite de ${h.mesReferencia} foi publicado para consulta e ciência.`,
-        referencia_tipo: 'holerite',
-        referencia_id: h.id,
-        link_destino: 'documentos',
-      });
-    }
-
-    await supabase.from('holerite_eventos').insert({
-      empresa_id: lote.empresaId,
-      lote_id: lote.id,
-      acao: 'publicado',
-      ator_id: uid,
-      ator_nome: atorNome,
-      detalhes: `Lote ${lote.competenciaLabel} publicado manualmente pelo RH.`,
-    });
+  if (!supabase) {
+    return {
+      success: false,
+      message: 'Autenticação Supabase necessária para publicar lote oficial.',
+    };
   }
 
-  return { success: true, message: `Lote "${lote.competenciaLabel}" publicado com sucesso.` };
+  const { error } = await supabase.rpc('publicar_lote_holerites_manual_transacional', {
+    p_lote_id: lote.id,
+  });
+
+  if (error) return { success: false, message: `Falha ao publicar lote: ${error.message}` };
+  return { success: true, message: `Lote "${lote.competenciaLabel}" publicado e notificado com sucesso.` };
 }
 
 export async function retificarHolerite(params: {
@@ -450,8 +433,8 @@ export async function retificarHolerite(params: {
   novoDescontoINSS?: number;
   atorNome: string;
 }): Promise<{ success: boolean; novoHolerite?: HoleriteRegistro; message: string }> {
-  if (!params.motivo.trim()) {
-    return { success: false, message: 'Informe o motivo da retificação.' };
+  if (!params.motivo.trim() || params.motivo.trim().length < 5) {
+    return { success: false, message: 'Informe o motivo da retificação (mínimo 5 caracteres).' };
   }
 
   const novaVersao = (params.original.versao || 1) + 1;
@@ -466,6 +449,7 @@ export async function retificarHolerite(params: {
     (params.original.bonusAtivo !== false ? params.original.bonusAssiduidade || 0 : 0);
   const totalDesc = descontoINSS + params.original.descontoVT + params.original.descontoVR;
   const liquido = Number(Math.max(0, totalBruto - totalDesc).toFixed(2));
+  const fgtsInformativo = Number((totalBruto * 0.08).toFixed(2));
   const nowIso = new Date().toISOString();
 
   const novo: HoleriteRegistro = {
@@ -475,13 +459,15 @@ export async function retificarHolerite(params: {
     valorHorasExtras: valorExtras,
     valorFT: valorExtras,
     descontoINSS,
+    descontoFGTS: fgtsInformativo,
+    fgtsInformativo,
     liquidoReceber: liquido,
     versao: novaVersao,
     retificadoDeId: params.original.id,
     motivoRetificacao: params.motivo.trim(),
     statusPublicacao: 'publicado',
     publicadoEm: nowIso,
-    statusEnvio: 'Aguardando Assinatura',
+    statusEnvio: 'Aguardando Confirmação',
     cienciaConfirmadaEm: undefined,
     cienciaUsuarioId: undefined,
     cienciaDeclaracaoVersao: undefined,
@@ -493,79 +479,40 @@ export async function retificarHolerite(params: {
 
   const supabase = getSupabase();
   if (supabase) {
-    const { data: uRes } = await supabase.auth.getUser();
-    const uid = uRes?.user?.id || null;
-
-    // Marca versão anterior como 'retificado' preservando histórico completo
-    await supabase
-      .from('holerites')
-      .update({ status_publicacao: 'retificado' })
-      .eq('id', params.original.id);
-
-    await supabase.storage
+    // 1. Primeiro grava o PDF no Storage privado; nunca altera o holerite antigo antes de confirmar upload + RPC
+    const { error: upErr } = await supabase.storage
       .from(HOLERITES_BUCKET)
       .upload(novo.storagePath, pdfRes.bytes, { contentType: 'application/pdf', upsert: true });
 
-    const { error } = await supabase.from('holerites').insert({
-      id: novo.id,
-      empresa_id: params.original.empresaId || 'emp-matriz-principal',
-      colaborador_id: novo.colaboradorId,
-      colaborador_nome: novo.colaboradorNome,
-      matricula: novo.matricula,
-      funcao: novo.funcao,
-      posto_nome: novo.postoNome,
-      mes_referencia: novo.mesReferencia,
-      competencia: novo.competencia || null,
-      salario_base: novo.salarioBase,
-      adicional_periculosidade: novo.adicionalPericulosidade,
-      adicional_noturno: novo.adicionalNoturno,
-      horas_extras_50: novo.horasExtras50,
-      valor_horas_extras: novo.valorHorasExtras,
-      plantoes_ft: novo.plantoesFT || 0,
-      valor_ft: novo.valorFT || 0,
-      desconto_inss: novo.descontoINSS,
-      desconto_fgts: novo.descontoFGTS,
-      desconto_vt: novo.descontoVT,
-      desconto_vr: novo.descontoVR,
-      bonus_assiduidade: novo.bonusAssiduidade || 0,
-      bonus_ativo: novo.bonusAtivo !== false,
-      liquido_receber: novo.liquidoReceber,
-      salario_liquido: novo.liquidoReceber,
-      status_envio: 'Aguardando Assinatura',
-      data_emissao: novo.dataEmissao,
-      lote_id: novo.loteId || null,
-      versao: novaVersao,
-      status_publicacao: 'publicado',
-      publicado_em: nowIso,
-      storage_bucket: HOLERITES_BUCKET,
-      storage_path: novo.storagePath,
-      pdf_sha256: novo.pdfSha256,
-      retificado_de_id: params.original.id,
-      motivo_retificacao: novo.motivoRetificacao,
+    if (upErr) {
+      return { success: false, message: `Falha ao enviar novo PDF retificado ao Storage: ${upErr.message}` };
+    }
+
+    const { error: rpcErr } = await supabase.rpc('retificar_holerite_transacional', {
+      p_holerite_anterior_id: params.original.id,
+      p_novo_id: novo.id,
+      p_motivo: novo.motivoRetificacao,
+      p_storage_path: novo.storagePath,
+      p_pdf_sha256: novo.pdfSha256,
+      p_salario_base: novo.salarioBase,
+      p_adicional_periculosidade: novo.adicionalPericulosidade,
+      p_adicional_noturno: novo.adicionalNoturno,
+      p_horas_extras_50: novo.horasExtras50,
+      p_valor_horas_extras: novo.valorHorasExtras,
+      p_plantoes_ft: novo.plantoesFT || 0,
+      p_valor_ft: novo.valorFT || 0,
+      p_desconto_inss: novo.descontoINSS,
+      p_fgts_informativo: fgtsInformativo,
+      p_desconto_vt: novo.descontoVT,
+      p_desconto_vr: novo.descontoVR,
+      p_bonus_assiduidade: novo.bonusAssiduidade || 0,
+      p_liquido_receber: novo.liquidoReceber,
     });
 
-    if (error) return { success: false, message: `Erro ao gravar retificação: ${error.message}` };
-
-    await supabase.from('holerite_eventos').insert({
-      empresa_id: params.original.empresaId || 'emp-matriz-principal',
-      holerite_id: novo.id,
-      lote_id: novo.loteId || null,
-      acao: 'retificado',
-      ator_id: uid,
-      ator_nome: params.atorNome,
-      detalhes: `Versão v${novaVersao} emitida retificando ${params.original.id}: ${params.motivo}`,
-    });
-
-    await supabase.from('notificacoes_sistema').insert({
-      empresa_id: params.original.empresaId || 'emp-matriz-principal',
-      destinatario_colaborador_id: novo.colaboradorId,
-      categoria: 'holerite',
-      titulo: `Holerite ${novo.mesReferencia} retificado (v${novaVersao})`,
-      mensagem: `Motivo: ${novo.motivoRetificacao}. Nova ciência de recebimento necessária.`,
-      referencia_tipo: 'holerite',
-      referencia_id: novo.id,
-      link_destino: 'documentos',
-    });
+    if (rpcErr) {
+      await supabase.storage.from(HOLERITES_BUCKET).remove([novo.storagePath]).catch(() => undefined);
+      return { success: false, message: `Erro ao gravar retificação transacional: ${rpcErr.message}` };
+    }
   }
 
   return {
@@ -583,7 +530,7 @@ export async function confirmarCienciaHolerite(
   if (!supabase) {
     return {
       success: false,
-      message: 'Autenticação Supabase necessária para gravar confirmação de ciência no servidor.',
+      message: 'Autenticação Supabase necessária para gravar confirmação de recebimento no servidor.',
     };
   }
 
@@ -604,3 +551,4 @@ export async function confirmarCienciaHolerite(
     message: 'Recebimento e ciência registrados com sucesso.',
   };
 }
+

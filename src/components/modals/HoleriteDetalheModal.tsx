@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { HoleriteRegistro, Colaborador } from '../../types';
 import { useApp } from '../../context/AppContext';
-import { downloadHoleritePDF, generateHoleritePdfBytes } from '../../services/documentService';
+import { downloadHoleritePDF } from '../../services/documentService';
 import {
   confirmarCienciaHolerite,
   CIENCIA_DECLARACAO_VERSAO,
@@ -101,7 +101,11 @@ export const HoleriteDetalheModal: React.FC<HoleriteDetalheModalProps> = ({ hole
   const isColaboradorDono =
     currentUser?.colaboradorId === holerite.colaboradorId ||
     currentUser?.role === 'funcionario';
-  const cienciaConfirmada = Boolean(holerite.cienciaConfirmadaEm || holerite.statusEnvio === 'Assinado');
+  const cienciaConfirmada = Boolean(
+    holerite.cienciaConfirmadaEm ||
+      holerite.statusEnvio === 'Recebimento confirmado' ||
+      holerite.statusEnvio === 'Assinado'
+  );
 
   const handleDownloadPdf = async () => {
     setIsDownloading(true);
@@ -120,16 +124,18 @@ export const HoleriteDetalheModal: React.FC<HoleriteDetalheModalProps> = ({ hole
     setIsConfirming(true);
     setCienciaMsg(null);
     try {
-      let sha = holerite.pdfSha256;
-      if (!sha) {
-        const gen = await generateHoleritePdfBytes(holerite, colab, empresaInfo);
-        sha = gen.sha256;
+      const sha = holerite.pdfSha256?.trim();
+      if (!sha || sha.length < 32) {
+        setCienciaMsg(
+          'Integridade do PDF (SHA-256) ainda não validada no servidor. Solicite ao RH republicar este demonstrativo.'
+        );
+        return;
       }
       const res = await confirmarCienciaHolerite(holerite, sha);
       if (res.success) {
         const updated: HoleriteRegistro = {
           ...holerite,
-          statusEnvio: 'Assinado',
+          statusEnvio: 'Recebimento confirmado',
           pdfSha256: sha,
           cienciaConfirmadaEm: res.confirmadoEm || new Date().toISOString(),
           cienciaUsuarioId: currentUser?.id,
@@ -382,13 +388,16 @@ export const HoleriteDetalheModal: React.FC<HoleriteDetalheModalProps> = ({ hole
               <strong className="block text-slate-200">R$ {totalProventos.toFixed(2)}</strong>
             </div>
             <div>
-              <span>FGTS do Mês (8%):</span>
-              <strong className="block text-emerald-400">R$ {holerite.descontoFGTS.toFixed(2)}</strong>
+              <span>FGTS Depositado (8% - Informativo):</span>
+              <strong className="block text-emerald-400">
+                R$ {(holerite.fgtsInformativo ?? holerite.descontoFGTS).toFixed(2)}
+              </strong>
+              <span className="text-[9px] text-slate-500">(não descontado do salário)</span>
             </div>
             <div>
               <span>Integridade SHA-256:</span>
               <strong className="block text-slate-200 truncate">
-                {holerite.pdfSha256 ? holerite.pdfSha256.slice(0, 10) : 'Gerado no PDF'}
+                {holerite.pdfSha256 ? holerite.pdfSha256.slice(0, 10) : 'Pendente no servidor'}
               </strong>
             </div>
           </div>
